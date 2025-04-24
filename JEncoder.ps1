@@ -182,7 +182,6 @@ function Confirm-Encoders {
 
 
 function Get-Encoders {
-    $scriptDir = "D:\Projects\JEncoder"  # Update this path to your script directory
     $encoderDir = Join-Path $scriptDir "encoders"
     $tempDir = Join-Path $env:TEMP "EncoderDownloads"
     $sevenZipPath = Join-Path $scriptDir "7z.exe"
@@ -193,16 +192,25 @@ function Get-Encoders {
     if (-not (Confirm-Encoders)) {
         Clear-Host
         Show-Header
+
         if ($missingEncoders -contains "HandBrakeCLI") {
             try {
                 Write-ColoredHost "Downloading HandBrakeCLI..." -ForegroundColor Cyan
-                $hbPage = Invoke-WebRequest -Uri "https://handbrake.fr/downloads2.php" -UseBasicParsing
-                $hbLink = ($hbPage.Links | Where-Object { $_.href -match "HandBrakeCLI.*x86_64\.zip" }).href
-                $hbFullUrl = "https://handbrake.fr/$hbLink"
+
+                $githubApiUrl = "https://api.github.com/repos/HandBrake/HandBrake/releases/latest"
+                $hbRelease = Invoke-RestMethod -Uri $githubApiUrl -Headers @{ "User-Agent" = "PowerShell" }
+
+                $hbAsset = $hbRelease.assets | Where-Object { $_.name -match "HandBrakeCLI.*win.*x86_64\.zip" } | Select-Object -First 1
+                if (-not $hbAsset) { throw "Could not find a matching HandBrakeCLI zip asset." }
+
                 $hbZip = Join-Path $tempDir "HandBrakeCLI.zip"
-                Invoke-WebRequest -Uri $hbFullUrl -OutFile $hbZip
+                Invoke-WebRequest -Uri $hbAsset.browser_download_url -OutFile $hbZip
+
                 Expand-Archive -Path $hbZip -DestinationPath $tempDir -Force
-                Copy-Item -Path (Get-ChildItem -Path $tempDir -Recurse -Filter "HandBrakeCLI.exe").FullName -Destination $handbrakePath -Force
+                $hbExe = Get-ChildItem -Path $tempDir -Recurse -Filter "HandBrakeCLI.exe" | Select-Object -First 1
+                if (-not $hbExe) { throw "HandBrakeCLI.exe not found after extraction." }
+
+                Copy-Item -Path $hbExe.FullName -Destination $handbrakePath -Force
                 Remove-Item $hbZip -Force
             } catch {
                 Write-ColoredHost "Failed to download HandBrakeCLI: $_" -ForegroundColor Red
@@ -231,8 +239,9 @@ function Get-Encoders {
         if ($missingEncoders -contains "MKVPropEdit") {
             try {
                 Write-ColoredHost "Downloading MKVPropEdit..." -ForegroundColor Cyan
-                $mkvPage = Invoke-WebRequest -Uri "https://mkvtoolnix.download/downloads.html#windows" -UseBasicParsing
-                $mkvUrl = [regex]::Match($mkvPage.RawContent, 'https:\/\/mkvtoolnix\.download\/windows\/releases\/\d+\/mkvtoolnix-64-bit-.*?\.7z').Value
+
+                # Use a known good static URL instead of scraping
+                $mkvUrl = "https://mkvtoolnix.download/windows/releases/82.0/mkvtoolnix-64-bit-82.0.7z"
                 $mkv7z = Join-Path $tempDir "mkvtoolnix.7z"
                 Invoke-WebRequest -Uri $mkvUrl -OutFile $mkv7z
                 & $sevenZipPath x $mkv7z -o"$tempDir\mkv" -y | Out-Null
@@ -243,7 +252,6 @@ function Get-Encoders {
             }
         }
 
-        # Final check after downloading
         Write-ColoredHost "`nRechecking after downloads..." -ForegroundColor Yellow
         Confirm-Encoders | Out-Null
     } else {
@@ -251,6 +259,7 @@ function Get-Encoders {
         Write-Host ""
     }
 }
+
 
 # Output Directory Setup
 $outputDir = Join-Path -Path $scriptDir -ChildPath $globalConfig.outputDir
