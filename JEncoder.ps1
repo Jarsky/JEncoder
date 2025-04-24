@@ -1,10 +1,11 @@
 # Define the script version as a variable
-$ScriptVersion = "1.3"
+$ScriptVersion = "1.3.5"
 
 <#
 Script Name: JEncoder
 Author: Jarsky
 Version History:
+  - v1.3.5: Fixed Summary of encodes and re-combined the encoder functions.
   - v1.3.0: Added automatically downloading required encoders.
   - v1.2.0: Added handling original files after processing.
   - v1.1.0: Refactored script to include config.ini handling and new menu system.
@@ -502,11 +503,15 @@ function Update-SubtitleFlags {
     }
 }
 
-
-
 # Function to encode using HandBrake
+
 function Invoke-WithHandBrake {
+    param (
+        [switch]$NVENC
+    )
+
     $inputFiles = Get-InputFiles
+    $summary = @()
 
     foreach ($inputFile in $inputFiles) {
         $outputPath = Set-OutputFileName -inputFilePath $inputFile.FullName
@@ -515,23 +520,45 @@ function Invoke-WithHandBrake {
             Name     = [System.IO.Path]::GetFileName($outputPath)
         }
 
-        & $handbrakePath -i "$($inputFile.FullName)" -o "$($outputFile.FullPath)" -e $handbrakeEncoder --encoder-preset $handbrakePreset -q $handbrakeQuality --cfr --all-audio --all-subtitles
+        if ($NVENC) {
+            & $handbrakePath -i "$($inputFile.FullName)" -o "$($outputFile.FullPath)" -e $handbrakeEncoderNVENC --encoder-preset $handbrakeNVENCPreset -q $handbrakeQuality --cfr --all-audio --all-subtitles
+        } else {
+            & $handbrakePath -i "$($inputFile.FullName)" -o "$($outputFile.FullPath)" -e $handbrakeEncoder --encoder-preset $handbrakePreset -q $handbrakeQuality --cfr --all-audio --all-subtitles
+        }
 
         if ($LASTEXITCODE -eq 0) {
-            Write-ColoredHost "Converted: $($inputFile.Name) > $($outputFile.Name) using HandBrakeCLI" -ForegroundColor Green
+            $method = if ($NVENC) { "HandBrakeCLI (NVENC)" } else { "HandBrakeCLI" }
+            Write-ColoredHost "Converted: $($inputFile.Name) > $($outputFile.Name) using $method" -ForegroundColor Green
             Move-OriginalFile $inputFile.FullName
+
+            $inputSize = (Get-Item $inputFile.FullName).Length
+            $outputSize = (Get-Item $outputFile.FullPath).Length
+            $reduction = Get-ReductionPercentage -inputSize $inputSize -outputSize $outputSize
+
+            $summary += [PSCustomObject]@{
+                FileName         = $inputFile.Name
+                InputSize        = Get-HumanReadableSize -Path $inputFile.FullName
+                OutputSize       = Get-HumanReadableSize -Path $outputFile.FullPath
+                ReductionPercent = "$reduction%"
+            }
         } else {
-            Write-ColoredHost "HandBrake failed on: $($inputFile.Name)" -ForegroundColor Red
+            $encoderType = if ($NVENC) { "(NVENC)" } else { "" }
+            Write-ColoredHost "HandBrake $encoderType failed on: $($inputFile.Name)" -ForegroundColor Red
         }
     }
+
+    Show-EncodingSummary -SummaryList $summary
 }
-
-
-
 
 # Function to encode using FFmpeg
+
 function Invoke-WithFFmpeg {
+    param (
+        [switch]$NVENC
+    )
+
     $inputFiles = Get-InputFiles
+    $summary = @()
 
     foreach ($inputFile in $inputFiles) {
         $outputPath = Set-OutputFileName -inputFilePath $inputFile.FullName
@@ -540,63 +567,35 @@ function Invoke-WithFFmpeg {
             Name     = [System.IO.Path]::GetFileName($outputPath)
         }
 
-        & $ffmpegPath -hide_banner -i "$($inputFile.FullName)" -c:v $ffmpegEncoder -preset $ffmpegPreset -crf $ffmpegQuality -c:a copy -c:s copy "$($outputFile.FullPath)"
+        if ($NVENC) {
+            & $ffmpegPath -i "$($inputFile.FullName)" -map 0 -c:v $ffmpegEncoderNVENC -cq $ffmpegQuality -preset $ffmpegNVENCPreset -c:a $audioEncoder -c:s copy -disposition:s:0 0 -max_muxing_queue_size 9999 "$($outputFile.FullPath)"
+        } else {
+            & $ffmpegPath -hide_banner -i "$($inputFile.FullName)" -c:v $ffmpegEncoder -preset $ffmpegPreset -crf $ffmpegQuality -c:a copy -c:s copy "$($outputFile.FullPath)"
+        }
 
         if ($LASTEXITCODE -eq 0) {
-            Write-ColoredHost "Converted: $($inputFile.Name) > $($outputFile.Name) using FFmpeg (CPU)" -ForegroundColor Green
+            $method = if ($NVENC) { "FFmpeg (NVENC)" } else { "FFmpeg (CPU)" }
+            Write-ColoredHost "Converted: $($inputFile.Name) > $($outputFile.Name) using $method" -ForegroundColor Green
             Move-OriginalFile $inputFile.FullName
+
+            $inputSize = (Get-Item $inputFile.FullName).Length
+            $outputSize = (Get-Item $outputFile.FullPath).Length
+            $reduction = Get-ReductionPercentage -inputSize $inputSize -outputSize $outputSize
+
+            $summary += [PSCustomObject]@{
+                FileName         = $inputFile.Name
+                InputSize        = Get-HumanReadableSize -Path $inputFile.FullName
+                OutputSize       = Get-HumanReadableSize -Path $outputFile.FullPath
+                ReductionPercent = "$reduction%"
+            }
         } else {
-            Write-ColoredHost "FFmpeg failed on: $($inputFile.Name)" -ForegroundColor Red
+            $encoderType = if ($NVENC) { "(NVENC)" } else { "" }
+            Write-ColoredHost "HandBrake $encoderType failed on: $($inputFile.Name)" -ForegroundColor Red
         }
     }
+
+    Show-EncodingSummary -SummaryList $summary
 }
-
-# Function to encode using HandBrake with NVENC
-function Invoke-WithHandBrakeNVENC {
-    $inputFiles = Get-InputFiles
-
-    foreach ($inputFile in $inputFiles) {
-        $outputPath = Set-OutputFileName -inputFilePath $inputFile.FullName
-        $outputFile = [PSCustomObject]@{
-            FullPath = $outputPath
-            Name     = [System.IO.Path]::GetFileName($outputPath)
-        }
-
-        & $handbrakePath -i "$($inputFile.FullName)" -o "$($outputFile.FullPath)" -e $handbrakeEncoderNVENC --encoder-preset $handbrakeNVENCPreset -q $handbrakeQuality --cfr --all-audio --all-subtitles
-
-        if ($LASTEXITCODE -eq 0) {
-            Write-ColoredHost "Converted: $($inputFile.Name) > $($outputFile.Name) using HandBrakeCLI (NVENC)" -ForegroundColor Green
-            Move-OriginalFile $inputFile.FullName
-        } else {
-            Write-ColoredHost "HandBrake (NVENC) failed on: $($inputFile.Name)" -ForegroundColor Red
-        }
-    }
-}
-
-
-
-# Function to encode using FFmpeg with NVENC
-function Invoke-WithFFmpegNVENC {
-    $inputFiles = Get-InputFiles
-
-    foreach ($inputFile in $inputFiles) {
-        $outputPath = Set-OutputFileName -inputFilePath $inputFile.FullName
-        $outputFile = [PSCustomObject]@{
-            FullPath = $outputPath
-            Name     = [System.IO.Path]::GetFileName($outputPath)
-        }
-
-        & $ffmpegPath -i "$($inputFile.FullName)" -map 0 -c:v $ffmpegEncoderNVENC -cq $ffmpegQuality -preset $ffmpegNVENCPreset -c:a $audioEncoder -c:s copy -disposition:s:0 0 -max_muxing_queue_size 9999 "$($outputFile.FullPath)"
-
-        if ($LASTEXITCODE -eq 0) {
-            Write-ColoredHost "Converted: $($inputFile.Name) > $($outputFile.Name) using FFmpeg (NVENC)" -ForegroundColor Green
-            Move-OriginalFile $inputFile.FullName
-        } else {
-            Write-ColoredHost "FFmpeg (NVENC) failed on: $($inputFile.Name)" -ForegroundColor Red
-        }
-    }
-}
-
 
 
 function Get-HumanReadableSize {
@@ -641,6 +640,28 @@ function Write-ColoredPercentage {
     }
 }
 
+function Show-EncodingSummary {
+    param (
+        [Parameter(Mandatory = $true)]
+        [array]$SummaryList
+    )
+
+    if ($SummaryList.Count -eq 0) {
+        Write-Host "`nNo files were successfully encoded, so no summary to show." -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host "`nEncoding Summary:`n" -ForegroundColor Cyan
+    foreach ($entry in $SummaryList) {
+        Write-Host "$($entry.FileName):" -NoNewline
+        Write-Host " Input = $($entry.InputSize)," -NoNewline
+        Write-Host " Output = $($entry.OutputSize)," -NoNewline
+        Write-Host " Reduction = " -NoNewline
+        Write-ColoredPercentage ([int]$entry.ReductionPercent.TrimEnd('%'))
+        Write-Host ""
+    }
+}
+
 function Show-EncodingMenu {
     do {
         Clear-Host
@@ -659,11 +680,11 @@ function Show-EncodingMenu {
         $choice = Read-Host "Enter your choice"
 
         switch ($choice.ToLower()) {
-            '1' { Invoke-WithHandBrake }
-            '2' { Invoke-WithFFmpeg }
-            '3' { Invoke-WithHandBrakeNVENC }
-            '4' { Invoke-WithFFmpegNVENC }
-            'q' { return }  # Return to main menu
+            '1' { Invoke-WithHandBrake -NVENC:$false }
+            '2' { Invoke-WithFFmpeg -NVENC:$false }
+            '3' { Invoke-WithHandBrake -NVENC:$true }
+            '4' { Invoke-WithFFmpeg -NVENC:$true }
+            'q' { return }
             default {
                 Write-ColoredHost "Invalid choice. Please select a valid option." -ForegroundColor Red
                 Start-Sleep -Seconds 1.5
@@ -674,6 +695,7 @@ function Show-EncodingMenu {
         [System.Console]::ReadKey() | Out-Null
     } while ($true)
 }
+
 
 do {
     Show-Header 
