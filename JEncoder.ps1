@@ -1,10 +1,11 @@
 # Define the script version as a variable
-$ScriptVersion = "1.3.5"
+$ScriptVersion = "1.4"
 
 <#
 Script Name: JEncoder
 Author: Jarsky
 Version History:
+  - v1.4.0: Fixed logic in detecting encoder tools versions for comparison.
   - v1.3.5: Fixed Summary of encodes and re-combined the encoder functions.
   - v1.3.0: Added automatically downloading required encoders.
   - v1.2.0: Added handling original files after processing.
@@ -213,12 +214,12 @@ function Confirm-Encoders {
     if (-not (Test-Path $ffprobePath))        { $missingEncoders += "FFprobe" }
     if (-not (Test-Path $mkvpropeditPath))    { $missingEncoders += "MKVPropEdit" }
 
-    $script:missingEncoders = $missingEncoders  # Store for use in Get-Encoders
+    $script:missingEncoders = $missingEncoders
 
     if ($missingEncoders.Count -gt 0) {
         Write-ColoredHost "Missing encoders:" -ForegroundColor Red
         $missingEncoders | ForEach-Object { Write-ColoredHost $_ -ForegroundColor Red }
-        return $false  # You can return false if there are missing encoders but avoid printing it
+        return $false
     } else {
         Write-ColoredHost "All encoders detected successfully!" -ForegroundColor Green
         return $true
@@ -233,7 +234,6 @@ function Get-Encoders {
     $tempDir = Join-Path $env:TEMP "EncoderDownloads"
     $sevenZipPath = Join-Path $scriptDir "7z.exe"
 
-    # Create necessary directories if they don't exist
     New-Item -ItemType Directory -Force -Path $encoderDir, $tempDir | Out-Null
 
     if (-not (Confirm-Encoders)) {
@@ -286,8 +286,6 @@ function Get-Encoders {
         if ($missingEncoders -contains "MKVPropEdit") {
             try {
                 Write-ColoredHost "Downloading MKVPropEdit..." -ForegroundColor Cyan
-
-                # Use a known good static URL instead of scraping
                 $mkvUrl = "https://mkvtoolnix.download/windows/releases/82.0/mkvtoolnix-64-bit-82.0.7z"
                 $mkv7z = Join-Path $tempDir "mkvtoolnix.7z"
                 Invoke-WebRequest -Uri $mkvUrl -OutFile $mkv7z
@@ -306,6 +304,215 @@ function Get-Encoders {
         Write-Host ""
     }
 }
+
+function Invoke-UpdateEncoders {
+    param(
+        [switch]$CheckOnly
+    )
+
+    # Output helpers
+    function Write-Status {
+        param (
+            [string]$encoder,
+            [string]$current,
+            [string]$status,
+            [string]$statusColor = "Gray"
+        )
+        Write-Host ("{0,-12}: {1} " -f $encoder, $current) -NoNewline
+        Write-Host $status -ForegroundColor $statusColor
+    }
+
+    # Version Checkers
+    function Get-FFmpegVersion {
+        $versionLine = & $script:ffmpegPath -version | Select-String -Pattern "^ffmpeg version"
+        if ($versionLine -match "ffmpeg version (\d{4}-\d{2}-\d{2})") {
+            return $matches[1]
+        }
+        return "Unknown"
+    }
+
+    function Get-FFprobeVersion {
+        $versionLine = & $script:ffprobePath -version | Select-String -Pattern "^ffprobe version"
+        if ($versionLine -match "ffprobe version (\d{4}-\d{2}-\d{2})") {
+            return $matches[1]
+        }
+        return "Unknown"
+    }
+
+    function Get-HandBrakeVersion {
+        $versionLine = & $script:handbrakePath --version 2>&1 | Select-String -Pattern "^HandBrake"
+        return ($versionLine.Line -replace "^HandBrake\s+", "").Trim().Split(" ")[0]
+    }
+
+    function Get-MKVPropEditVersion {
+        $versionLine = & $script:mkvpropeditPath --version | Select-String -Pattern "^mkvpropedit"
+        if ($versionLine -match "(v\d+(\.\d+)*)") {
+            return $matches[1]
+        }
+        return $versionLine.Trim()
+    }
+
+    # Fetch latest versions
+    function Get-LatestVersions {
+        $latest = @{ }
+    
+        try {
+            $hbRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/HandBrake/HandBrake/releases/latest" -Headers @{ "User-Agent" = "PowerShell" }
+            $latest.handbrake = $hbRelease.tag_name.TrimStart("v")
+        } catch { $latest.handbrake = "Unknown" }
+    
+        try {
+            $webContent = Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/"
+            $versionElement = $webContent.ParsedHtml.getElementById("git-version")
+        
+            $fullVersion = $versionElement.innerText.Trim()
+
+            if ($fullVersion -match "(\d{4}-\d{2}-\d{2})") {
+                $latest.ffmpeg = $matches[1]
+            } else {
+                $latest.ffmpeg = "Unknown"
+            }
+            $latest.ffprobe = $latest.ffmpeg
+        } catch { 
+            $latest.ffmpeg = "Unknown"
+            $latest.ffprobe = "Unknown" 
+        }
+    
+        try {
+            $mkvtoolnixBaseUrl = "https://mkvtoolnix.download/windows/continuous/64-bit/"
+            $mkvtoolnixBasePage = Invoke-WebRequest -Uri $mkvtoolnixBaseUrl
+            $versionFolders = $mkvtoolnixBasePage.Links | Where-Object { $_.href -match "(\d+\.\d+)" } | ForEach-Object { $matches[1] } | Sort-Object -Descending
+            $latestVersionFolder = $versionFolders[0]
+            $latest.mkvpropedit = "v$latestVersionFolder"
+        } catch {
+            $latest.mkvpropedit = "Unknown"
+        }
+        return $latest
+    }
+
+    $latestVersions = Get-LatestVersions
+    $currentVersions = @{
+        ffmpeg      = Get-FFmpegVersion
+        ffprobe     = Get-FFprobeVersion
+        handbrake   = Get-HandBrakeVersion
+        mkvpropedit = Get-MKVPropEditVersion
+    }
+
+    Write-Host "`nChecking encoder versions...`n"
+    $needsUpdate = $false
+    $toUpdate = @()
+
+    foreach ($key in $currentVersions.Keys) {
+        $current = $currentVersions[$key]
+        $latest  = $latestVersions[$key]
+    
+        $isNewer = $false
+        if ($current -eq "Unknown" -or $latest -eq "Unknown") {
+            $isNewer = $true
+        }
+        elseif ($current -match '^\d{4}-\d{2}-\d{2}$' -and $latest -match '^\d{4}-\d{2}-\d{2}$') {
+            $currentDate = [datetime]::ParseExact($current, 'yyyy-MM-dd', $null)
+            $latestDate = [datetime]::ParseExact($latest, 'yyyy-MM-dd', $null)
+    
+            $isNewer = $currentDate -lt $latestDate
+        }
+        else {
+            try {
+                $currentVer = [version]($current.TrimStart("v"))
+                $latestVer = [version]($latest.TrimStart("v"))
+                $isNewer = $currentVer -lt $latestVer
+            } catch {
+                $isNewer = ($current -ne $latest)
+            }
+        }
+    
+        if (-not $isNewer) {
+            Write-Status $key $current "(Latest Version!)" "Green"
+        } else {
+            Write-Status $key $current "(Update Available: $latest)" "Yellow"
+            $needsUpdate = $true
+            $toUpdate += $key
+        }
+    }
+    
+
+    if ($CheckOnly) {
+        if ($needsUpdate) {
+            Write-Host "`nUpdates are available. Do you want to update now? (Y/N)" -ForegroundColor Yellow
+            $confirm = Read-Host
+            if ($confirm -match '^(y|yes)$') {
+                Write-Host "`nDownloading and updating encoders..." -ForegroundColor Cyan
+
+                $tempDir = Join-Path $env:TEMP "EncoderDownloads"
+                $sevenZipPath = Join-Path $scriptDir "7z.exe"
+                New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+
+                if ($toUpdate -contains "handbrake") {
+                    try {
+                        Write-ColoredHost "Updating HandBrakeCLI..." -ForegroundColor Cyan
+                        $hbRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/HandBrake/HandBrake/releases/latest" -Headers @{ "User-Agent" = "PowerShell" }
+                        $hbAsset = $hbRelease.assets | Where-Object { $_.name -match "HandBrakeCLI.*win.*x86_64\.zip" } | Select-Object -First 1
+                        $hbZip = Join-Path $tempDir "HandBrakeCLI.zip"
+                        Invoke-WebRequest -Uri $hbAsset.browser_download_url -OutFile $hbZip
+                        Expand-Archive -Path $hbZip -DestinationPath $tempDir -Force
+                        $hbExe = Get-ChildItem -Path $tempDir -Recurse -Filter "HandBrakeCLI.exe" | Select-Object -First 1
+                        Copy-Item -Path $hbExe.FullName -Destination $script:handbrakePath -Force
+                        Remove-Item $hbZip -Force
+                    } catch {
+                        Write-ColoredHost "Failed to update HandBrakeCLI: $_" -ForegroundColor Red
+                    }
+                }
+
+                if ($toUpdate -contains "ffmpeg" -or $toUpdate -contains "ffprobe") {
+                    try {
+                        Write-ColoredHost "Updating FFmpeg/FFprobe..." -ForegroundColor Cyan
+                        $ff7z = Join-Path $tempDir "ffmpeg.7z"
+                        Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-full.7z" -OutFile $ff7z
+                        & $sevenZipPath x $ff7z -o"$tempDir\ffmpeg" -y | Out-Null
+                        $ffDir = Get-ChildItem "$tempDir\ffmpeg" -Directory | Select-Object -First 1
+                        Copy-Item "$($ffDir.FullName)\bin\ffmpeg.exe" -Destination $script:ffmpegPath -Force
+                        Copy-Item "$($ffDir.FullName)\bin\ffprobe.exe" -Destination $script:ffprobePath -Force
+                        Remove-Item $ff7z -Force
+                    } catch {
+                        Write-ColoredHost "Failed to update FFmpeg: $_" -ForegroundColor Red
+                    }
+                }
+
+                if ($toUpdate -contains "mkvpropedit") {
+                    try {
+                        Write-ColoredHost "Updating MKVPropEdit..." -ForegroundColor Cyan
+                        $mkvtoolnixBaseUrl = "https://mkvtoolnix.download/windows/continuous/64-bit/"
+                        $mkvtoolnixBasePage = Invoke-WebRequest -Uri $mkvtoolnixBaseUrl
+                        $versionFolders = $mkvtoolnixBasePage.Links | Where-Object { $_.href -match "(\d+\.\d+)" } | ForEach-Object { $matches[1] } | Sort-Object -Descending
+                        $latestVersionFolder = $versionFolders[0]
+                        $mkvtoolnixVersionDirUrl = $mkvtoolnixBaseUrl.TrimEnd('/')
+                        $mkvtoolnixVersionPage = Invoke-WebRequest -Uri "$mkvtoolnixVersionDirUrl/$latestVersionFolder/"
+                        $mkvLinks = $mkvtoolnixVersionPage.Links | Where-Object { $_.href -match "mkvtoolnix-64-bit-$latestVersionFolder-revision-(\d+)-" }
+                        $revisions = ($mkvLinks | Where-Object { $_.href -match "mkvtoolnix-64-bit-$latestVersionFolder-revision-(\d+)-" } | ForEach-Object { $matches[1].PadLeft(3,'0') }) | Sort-Object -Descending
+                        $latestRevision = $revisions[0]
+                        $downloadLink = ($mkvLinks | Where-Object { $_.href -match "mkvtoolnix-64-bit-$latestVersionFolder-revision-$latestRevision-.*\.7z$" }).href
+                        $latestVersionUrl = "https://mkvtoolnix.download$downloadLink"
+                        $mkv7z = Join-Path $tempDir "mkvtoolnix.7z"
+                        Invoke-WebRequest -Uri $latestVersionUrl -OutFile $mkv7z
+                        & $sevenZipPath x $mkv7z -o"$tempDir\mkv" -y | Out-Null
+                        Copy-Item (Get-ChildItem "$tempDir\mkv" -Recurse -Filter "mkvpropedit.exe").FullName -Destination $script:mkvpropeditPath -Force
+                        Remove-Item $mkv7z -Force
+                    } catch {
+                        Write-ColoredHost "Failed to update MKVPropEdit: $_" -ForegroundColor Red
+                    }
+                }
+
+                Write-ColoredHost "`nUpdate process complete. Rechecking versions..." -ForegroundColor Green
+                Invoke-UpdateEncoders -CheckOnly
+            }
+        } else {
+            Write-Host "`nAll encoders are up to date." -ForegroundColor Green
+        }
+        return
+    }
+
+}
+
 
 
 # Output Directory Setup
@@ -326,21 +533,14 @@ function Set-OutputFileName {
     param (
         [string]$inputFilePath
     )
-
-    # Base filename without extension
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($inputFilePath)
     $fileExtension = [System.IO.Path]::GetExtension($inputFilePath)
 
-    # Replace spaces in the base name if needed
     if ($replaceSpaces) {
         $baseName = $baseName -replace ' ', '.'
     }
-
-    # Rename the file (replace x264 or H264 with x265)
     $outputFileName = $baseName -replace "H[\s.]*264|x[\s.]*264", "x265"
     $outputFilePath = Join-Path -Path $outputDir -ChildPath "$outputFileName$fileExtension"
-    
-    # Handle file name conflicts (e.g., append a number if file exists)
     $n = 1
     while (Test-Path $outputFilePath) {
         $outputFilePath = Join-Path -Path $outputDir -ChildPath "$outputFileName-$n$fileExtension"
@@ -350,23 +550,20 @@ function Set-OutputFileName {
     return $outputFilePath
 }
 
-# Move-to-be-deleted Directory Setup
+# to-be-deleted Directory Setup
 $toDeleteDir = Join-Path -Path $scriptDir -ChildPath $globalConfig.toDeleteDirectory
 if (-not (Test-Path $toDeleteDir)) {
     New-Item -Path $toDeleteDir -ItemType Directory | Out-Null
 }
 
+# List files to process
 function Show-FilesToProcess {
     param (
         [string]$scriptDir,
         [string]$outputDir
     )
-
-    # Get the files to process
     $filesToProcess = Get-ChildItem -Path $scriptDir -Include *.mp4, *.mkv -File -Recurse -ErrorAction SilentlyContinue
     $filesToProcess = $filesToProcess | Where-Object { $_.DirectoryName -ne $outputDir }
-
-    # Display the files found
     Write-ColoredHost "Files found:" -ForegroundColor Yellow
     Write-ColoredHost "------------" -ForegroundColor Yellow
     if ($filesToProcess.Count -eq 0) {
@@ -375,8 +572,6 @@ function Show-FilesToProcess {
         $filesToProcess | ForEach-Object { Write-ColoredHost $_.Name -ForegroundColor White }
         Write-ColoredHost "" -ForegroundColor White
     }
-
-    # If no files are found, show a message and exit
     if ($filesToProcess.Count -eq 0) {
         Write-ColoredHost "No .mp4 or .mkv files were found in the script directory." -ForegroundColor Red
         Write-ColoredHost "Press any key to exit..." -ForegroundColor White
@@ -393,27 +588,18 @@ function Use-Files {
 
     $inputFiles = Get-InputFiles
     foreach ($file in $inputFiles) {
-        # Ensure FullName is not null
         if ($null -eq $file.FullName) {
             Write-Warning "Invalid input file: $file"
             continue
         }
-
-        # Generate output file path
         $outputFilePath = Set-OutputFileName -inputFilePath $file.FullName
-
-        # Ensure outputFilePath is not null or empty
         if ([string]::IsNullOrEmpty($outputFilePath)) {
             Write-Warning "Failed to generate output file path for: $file.FullName"
             continue
         }
-
-        # Debugging: Show paths
         Write-Host "Processing File:"
         Write-Host "  Input:  $($file.FullName)"
         Write-Host "  Output: $outputFilePath"
-
-        # Call the specific invoke function
         try {
             & $InvokeFunction.Invoke($file, $outputFilePath)
         } catch {
@@ -422,7 +608,6 @@ function Use-Files {
     }
 }
 
-# AFTER processing a file (in your encoding functions):
 # Move original file if deleteOriginals is true
 function Move-OriginalFile {
     param (
@@ -447,11 +632,8 @@ function Get-SubtitleInfo {
     param (
         [string]$filePath
     )
-
     # Run ffprobe to get details of subtitle streams
     $subtitleInfo = & $ffprobePath -v error -select_streams s -show_entries stream=index,codec_type,codec_name -of json "$filePath"
-
-    # Convert JSON output to PowerShell object
     $subtitleInfo | ConvertFrom-Json | Select-Object -ExpandProperty streams
 }
 
@@ -464,7 +646,6 @@ function Update-SubtitleFlags {
         Write-Warning "File not found: $filePath"
         return
     }
-
     # Assumes Get-SubtitleInfo returns a list of subtitle track info with properties like index and codec_name
     $subtitleInfo = Get-SubtitleInfo -filePath $filePath
     $commands = @()
@@ -708,6 +889,7 @@ do {
     Write-ColoredHost "1. Encode Files" -ForegroundColor White
     Write-ColoredHost "2. Show Current Configuration" -ForegroundColor White
     Write-ColoredHost "3. Edit Configuration" -ForegroundColor White
+    Write-ColoredHost "5. Check for Updates" -ForegroundColor White
     Write-ColoredHost "Q. Quit" -ForegroundColor Red
     Write-Host ""
 
@@ -717,6 +899,7 @@ do {
         '1' { Show-EncodingMenu }
         '2' { Show-Configuration }
         '3' { Edit-Configuration }
+        '5' { Invoke-UpdateEncoders -CheckOnly}
         'q' {
             Write-ColoredHost "Exiting... Goodbye!" -ForegroundColor Green
             Start-Sleep 2
@@ -732,3 +915,4 @@ do {
     Write-Host ""
     [System.Console]::ReadKey() | Out-Null
 } while ($true)
+
