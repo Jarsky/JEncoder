@@ -1,5 +1,5 @@
 # Define the script version as a variable
-$ScriptVersion = "1.2"
+$ScriptVersion = "1.3"
 
 <#
 Script Name: JEncoder
@@ -25,7 +25,7 @@ Version History:
 - Save-Config: Saves the current settings back to the configuration file.
 - Show-Configuration: Displays the current configuration settings in the console.
 - Edit-Configuration: Allows users to update configuration settings interactively.
-- Confirm-Encoders: Verifies if the required encoders (HandBrakeCLI, FFmpeg, MKVPropEdit) are available.
+- Confirm-Encoders: Verifies if the required encoding tools (HandBrakeCLI, FFmpeg, MKVPropEdit) are available.
 - Get-Encoders: Downloads and installs any missing encoders.
 - Write-ColoredHost: Outputs colored text to the console for better visibility.
 
