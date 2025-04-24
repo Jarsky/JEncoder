@@ -1,3 +1,47 @@
+# Define the script version as a variable
+$ScriptVersion = "1.2"
+
+<#
+Script Name: JEncoder
+Author: Jarsky
+Version History:
+  - v1.3.0: Added automatically downloading required encoders.
+  - v1.2.0: Added handling original files after processing.
+  - v1.1.0: Refactored script to include config.ini handling and new menu system.
+  - v1.0.0: Initial release with basic HandBrakeCLI and FFmpeg support and NVENC.
+  
+.FEATURES
+- Automates media encoding tasks using HandBrakeCLI (x265) and FFmpeg (libx265, NVENC).
+- Supports CPU and NVENC GPU encoding.
+- Configurable through a `config.ini` file, allowing users to modify settings interactively.
+- Includes audio encoding and subtitle processing.
+- Verifies and downloads missing encoders (HandBrakeCLI, FFmpeg, MKVPropEdit).
+- Provides detailed feedback and status messages during encoding operations.
+- Option to move original files to a "to_be_deleted" folder after processing.
+
+.FUNCTIONS
+- Show-Header: Displays a formatted header in the console.
+- Open-Config: Reads the configuration file and loads settings.
+- Save-Config: Saves the current settings back to the configuration file.
+- Show-Configuration: Displays the current configuration settings in the console.
+- Edit-Configuration: Allows users to update configuration settings interactively.
+- Confirm-Encoders: Verifies if the required encoders (HandBrakeCLI, FFmpeg, MKVPropEdit) are available.
+- Get-Encoders: Downloads and installs any missing encoders.
+- Write-ColoredHost: Outputs colored text to the console for better visibility.
+
+.CONFIGURATION OPTIONS
+- Encoding quality settings for HandBrakeCLI and FFmpeg.
+- Directory paths for output, deletion, and encoders.
+- Options for handling spaces in filenames, fixing subtitles, and moving original files post-processing.
+
+.NOTES
+- Ensure the required encoders (HandBrakeCLI, FFmpeg, MKVPropEdit) are available in the `encoders` folder or the script will attempt to download them automatically.
+- The version number is defined as `$ScriptVersion` at the start of the script for easy management.
+
+#>
+
+
+
 ### VARIABLES ###
 
 # Config File and Default Config
@@ -31,6 +75,8 @@ function Show-Header {
  _   | |  __| | '_ \ / __/ _ \ / _  |/ _ \ '__|
 | |__| | |____| | | | (_| (_) | (_| |  __/ |   
  \____/|______|_| |_|\___\___/ \__,_|\___|_|   
+
+                        Version: $ScriptVersion
                                                
 "@
     Write-ColoredHost $header -ForegroundColor Cyan
