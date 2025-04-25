@@ -1,10 +1,11 @@
 # Define the script version as a variable
-$ScriptVersion = "1.4"
+$ScriptVersion = "1.4.1"
 
 <#
 Script Name: JEncoder
 Author: Jarsky
 Version History:
+  - v1.4.1: Fixed summary report.
   - v1.4.0: Fixed logic in detecting encoder tools versions for comparison.
   - v1.3.5: Fixed Summary of encodes and re-combined the encoder functions.
   - v1.3.0: Added automatically downloading required encoders.
@@ -710,7 +711,6 @@ function Invoke-WithHandBrake {
         if ($LASTEXITCODE -eq 0) {
             $method = if ($NVENC) { "HandBrakeCLI (NVENC)" } else { "HandBrakeCLI" }
             Write-ColoredHost "Converted: $($inputFile.Name) > $($outputFile.Name) using $method" -ForegroundColor Green
-            Move-OriginalFile $inputFile.FullName
 
             $inputSize = (Get-Item $inputFile.FullName).Length
             $outputSize = (Get-Item $outputFile.FullPath).Length
@@ -722,6 +722,9 @@ function Invoke-WithHandBrake {
                 OutputSize       = Get-HumanReadableSize -Path $outputFile.FullPath
                 ReductionPercent = "$reduction%"
             }
+
+            Move-OriginalFile $inputFile.FullName
+
         } else {
             $encoderType = if ($NVENC) { "(NVENC)" } else { "" }
             Write-ColoredHost "HandBrake $encoderType failed on: $($inputFile.Name)" -ForegroundColor Red
@@ -757,7 +760,6 @@ function Invoke-WithFFmpeg {
         if ($LASTEXITCODE -eq 0) {
             $method = if ($NVENC) { "FFmpeg (NVENC)" } else { "FFmpeg (CPU)" }
             Write-ColoredHost "Converted: $($inputFile.Name) > $($outputFile.Name) using $method" -ForegroundColor Green
-            Move-OriginalFile $inputFile.FullName
 
             $inputSize = (Get-Item $inputFile.FullName).Length
             $outputSize = (Get-Item $outputFile.FullPath).Length
@@ -769,6 +771,9 @@ function Invoke-WithFFmpeg {
                 OutputSize       = Get-HumanReadableSize -Path $outputFile.FullPath
                 ReductionPercent = "$reduction%"
             }
+
+            Move-OriginalFile $inputFile.FullName
+            
         } else {
             $encoderType = if ($NVENC) { "(NVENC)" } else { "" }
             Write-ColoredHost "HandBrake $encoderType failed on: $($inputFile.Name)" -ForegroundColor Red
