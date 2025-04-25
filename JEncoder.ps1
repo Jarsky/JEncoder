@@ -1,10 +1,11 @@
 # Define the script version as a variable
-$ScriptVersion = "1.4.1"
+$ScriptVersion = "1.5"
 
 <#
 Script Name: JEncoder
 Author: Jarsky
 Version History:
+  - v1.5.0: Added feature for script to automatically update to latest.
   - v1.4.1: Fixed summary report.
   - v1.4.0: Fixed logic in detecting encoder tools versions for comparison.
   - v1.3.5: Fixed Summary of encodes and re-combined the encoder functions.
@@ -287,7 +288,17 @@ function Get-Encoders {
         if ($missingEncoders -contains "MKVPropEdit") {
             try {
                 Write-ColoredHost "Downloading MKVPropEdit..." -ForegroundColor Cyan
-                $mkvUrl = "https://mkvtoolnix.download/windows/releases/82.0/mkvtoolnix-64-bit-82.0.7z"
+                $mkvtoolnixBaseUrl = "https://mkvtoolnix.download/windows/continuous/64-bit/"
+                $mkvtoolnixBasePage = Invoke-WebRequest -Uri $mkvtoolnixBaseUrl
+                $versionFolders = $mkvtoolnixBasePage.Links | Where-Object { $_.href -match "(\d+\.\d+)" } | ForEach-Object { $matches[1] } | Sort-Object -Descending
+                $latestVersionFolder = $versionFolders[0]
+                $mkvtoolnixVersionDirUrl = $mkvtoolnixBaseUrl.TrimEnd('/')
+                $mkvtoolnixVersionPage = Invoke-WebRequest -Uri "$mkvtoolnixVersionDirUrl/$latestVersionFolder/"
+                $mkvLinks = $mkvtoolnixVersionPage.Links | Where-Object { $_.href -match "mkvtoolnix-64-bit-$latestVersionFolder-revision-(\d+)-" }
+                $revisions = ($mkvLinks | Where-Object { $_.href -match "mkvtoolnix-64-bit-$latestVersionFolder-revision-(\d+)-" } | ForEach-Object { $matches[1].PadLeft(3,'0') }) | Sort-Object -Descending
+                $latestRevision = $revisions[0]
+                $downloadLink = ($mkvLinks | Where-Object { $_.href -match "mkvtoolnix-64-bit-$latestVersionFolder-revision-$latestRevision-.*\.7z$" }).href
+                $mkvUrl = "https://mkvtoolnix.download$downloadLink"
                 $mkv7z = Join-Path $tempDir "mkvtoolnix.7z"
                 Invoke-WebRequest -Uri $mkvUrl -OutFile $mkv7z
                 & $sevenZipPath x $mkv7z -o"$tempDir\mkv" -y | Out-Null
@@ -324,6 +335,11 @@ function Invoke-UpdateEncoders {
     }
 
     # Version Checkers
+
+    function Get-JEncoderVersion {
+        return $ScriptVersion
+    }
+    
     function Get-FFmpegVersion {
         $versionLine = & $script:ffmpegPath -version | Select-String -Pattern "^ffmpeg version"
         if ($versionLine -match "ffmpeg version (\d{4}-\d{2}-\d{2})") {
@@ -356,12 +372,25 @@ function Invoke-UpdateEncoders {
     # Fetch latest versions
     function Get-LatestVersions {
         $latest = @{ }
-    
+ 
+        # Get Latest JEncoder Version
+        try {
+            $Repo = "Jarsky/JEncoder"
+            $releaseUrl = "https://api.github.com/repos/$Repo/releases/latest"
+            $latestRelease = Invoke-RestMethod -Uri $releaseUrl -UseBasicParsing
+            $latest.jencoder = $latestRelease.tag_name -replace '^JEncoder-v', ''
+            $latest.latestRelease = $latestRelease
+        } catch { 
+            $latest.jencoder = "Unknown" 
+        }
+
+        # Get Latest Handbrake Version
         try {
             $hbRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/HandBrake/HandBrake/releases/latest" -Headers @{ "User-Agent" = "PowerShell" }
             $latest.handbrake = $hbRelease.tag_name.TrimStart("v")
         } catch { $latest.handbrake = "Unknown" }
-    
+        
+        # Get Latest FFMpeg Version
         try {
             $webContent = Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/"
             $versionElement = $webContent.ParsedHtml.getElementById("git-version")
@@ -379,6 +408,7 @@ function Invoke-UpdateEncoders {
             $latest.ffprobe = "Unknown" 
         }
     
+        # Get Latest MKVTools Version
         try {
             $mkvtoolnixBaseUrl = "https://mkvtoolnix.download/windows/continuous/64-bit/"
             $mkvtoolnixBasePage = Invoke-WebRequest -Uri $mkvtoolnixBaseUrl
@@ -388,11 +418,13 @@ function Invoke-UpdateEncoders {
         } catch {
             $latest.mkvpropedit = "Unknown"
         }
+
         return $latest
     }
 
     $latestVersions = Get-LatestVersions
     $currentVersions = @{
+        jencoder    = Get-JEncoderVersion
         ffmpeg      = Get-FFmpegVersion
         ffprobe     = Get-FFprobeVersion
         handbrake   = Get-HandBrakeVersion
@@ -447,6 +479,36 @@ function Invoke-UpdateEncoders {
                 $tempDir = Join-Path $env:TEMP "EncoderDownloads"
                 $sevenZipPath = Join-Path $scriptDir "7z.exe"
                 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+
+                if ($toUpdate -contains "jencoder") {
+                    Write-Host "`nUpdating JEncoder script..." -ForegroundColor Cyan
+                
+                    try {
+                        $jeVersion = $latestVersions.latestRelease.assets | Where-Object { $_.name -like "*.zip" } | Select-Object -First 1
+                        if (-not $jeVersion) {
+                            throw "Could not find latest JEncoder ZIP asset."
+                        }
+                        $jeRelease = $jeVersion.browser_download_url
+                        $jeZip = Join-Path $tempDir "JEncoder.zip"
+                        try {
+                            Invoke-WebRequest -Uri $jeRelease -OutFile $jeZip -UseBasicParsing -ErrorAction Stop
+                        } catch {
+                            throw "Failed to download JEncoder ZIP from $jeRelease. $_"
+                        }
+                        Expand-Archive -Path $jeZip -DestinationPath $tempDir -Force
+                        $jePS1 = Get-ChildItem -Path $tempDir -Recurse -Filter "*.ps1" | Select-Object -First 1
+                        if (-not $jePS1) {
+                            throw "No .ps1 script found in extracted archive."
+                        }
+                        $scriptPath = $MyInvocation.MyCommand.Path  
+                        Copy-Item -Path $jePS1.FullName -Destination $scriptPath -Force
+                        Remove-Item $jeZip -Force                      
+                        Write-Host "JEncoder updated successfully! Please restart the script." -ForegroundColor Green
+                        exit
+                    } catch {
+                        Write-Host "Failed to update JEncoder: $_" -ForegroundColor Red
+                    }
+                }             
 
                 if ($toUpdate -contains "handbrake") {
                     try {
@@ -827,6 +889,8 @@ function Write-ColoredPercentage {
 }
 
 function Show-EncodingSummary {
+    Clear-Host
+    Show-Header
     param (
         [Parameter(Mandatory = $true)]
         [array]$SummaryList
@@ -878,6 +942,7 @@ function Show-EncodingMenu {
         }
 
         Write-ColoredHost "Press any key to continue..." -ForegroundColor Yellow
+        Write-Host ""
         [System.Console]::ReadKey() | Out-Null
     } while ($true)
 }
