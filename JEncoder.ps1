@@ -1,10 +1,12 @@
 # Define the script version as a variable
-$ScriptVersion = "1.5"
+$ScriptVersion = "1.5.2"
 
 <#
 Script Name: JEncoder
 Author: Jarsky
 Version History:
+  - v1.5.2: Refactored and standardized some of the code
+  - v1.5.1: Small bug fixes. Made the file renaming dynamic based on encoding codec
   - v1.5.0: Added feature for script to automatically update to latest.
   - v1.4.1: Fixed summary report.
   - v1.4.0: Fixed logic in detecting encoder tools versions for comparison.
@@ -49,13 +51,15 @@ Version History:
 ### VARIABLES ###
 
 # Config File and Default Config
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $configFile = Join-Path -Path $PSScriptRoot -ChildPath "config.ini"
 
 $defaultConfig = [ordered]@{
     replaceSpaces         = $false
     fixSubtitles          = $false
     outputDir             = "output"
-    toDeleteDirectory     = "to_be_deleted"
+    renameOutputFile      = $true
+    toDeleteDir           = "to_be_deleted"
     deleteOriginals       = $false
     handbrakeEncoder      = "x265"
     handbrakePreset       = "default"
@@ -177,6 +181,7 @@ foreach ($key in $globalConfig.Keys) {
     Set-Variable -Name $key -Value $globalConfig[$key] -Scope Global
 }
 
+
 ### Paths ###
 
 if (-not $script:scriptDir) {
@@ -188,6 +193,7 @@ $script:handbrakePath    = Join-Path $script:encoderDir "HandBrakeCLI.exe"
 $script:ffmpegPath       = Join-Path $script:encoderDir "ffmpeg.exe"
 $script:ffprobePath      = Join-Path $script:encoderDir "ffprobe.exe"
 $script:mkvpropeditPath  = Join-Path $script:encoderDir "mkvpropedit.exe"
+
 
 
 ### MAIN SCRIPT ###
@@ -584,39 +590,93 @@ if (-not (Test-Path $outputDir)) {
     New-Item -Path $outputDir -ItemType Directory | Out-Null
 }
 
+# To-Delete Directory Setup
+if ($globalConfig.toDeleteDir) {
+    $toDeleteDir = Join-Path -Path $scriptDir -ChildPath $globalConfig.toDeleteDir
+} else {
+    $toDeleteDir = $null
+}
+
+
 # Function to get the input files
 function Get-InputFiles {
-    $inputFiles = Get-ChildItem -Path $scriptDir -Include *.mp4, *.mkv -File -Recurse -ErrorAction SilentlyContinue
-    $inputFiles = $inputFiles | Where-Object { $_.DirectoryName -ne $outputDir }
+    param (
+        [string]$scriptDir
+    )
+
+    $inputFiles = Get-ChildItem -Path $scriptDir -Include *.mp4, *.mkv -File -Recurse -ErrorAction SilentlyContinue | Where-Object {
+        ($_.DirectoryName -ne $outputDir) -and
+        ($null -eq $toDeleteDir -or $_.DirectoryName -ne $toDeleteDir)
+    }
+
     return $inputFiles
 }
+
+
+
 
 # Function to process and rename the output files
 function Set-OutputFileName {
     param (
-        [string]$inputFilePath
+        [string]$inputFilePath,
+        [string]$encoderUsed,
+        [string]$audioEncoder = "copy",
+        [switch]$renameOutputFile
     )
+
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($inputFilePath)
     $fileExtension = [System.IO.Path]::GetExtension($inputFilePath)
 
     if ($replaceSpaces) {
         $baseName = $baseName -replace ' ', '.'
     }
-    $outputFileName = $baseName -replace "H[\s.]*264|x[\s.]*264", "x265"
-    $outputFilePath = Join-Path -Path $outputDir -ChildPath "$outputFileName$fileExtension"
+
+    switch -Regex ($encoderUsed.ToLower()) {
+        "265"  { $targetCodec = "x265"; break }
+        "264"  { $targetCodec = "x264"; break }
+        "av1"  { $targetCodec = "av1"; break }
+        default { $targetCodec = "encoded" }
+    }
+
+    $baseName = $baseName -replace "(h[\s\.-]?264|x[\s\.-]?264|h[\s\.-]?265|x[\s\.-]?265|av1|xvid|divx|mpeg2?)", $targetCodec
+
+    if ($audioEncoder -ne "copy") {
+        $audioTargets = @{
+            "truehd"      = "TrueHD"
+            "opus"        = "Opus"
+            "libopus"     = "Opus"
+            "^pcm"        = "PCM"
+            "flac"        = "FLAC"
+            "eac3"        = "AC3"
+            "ac3"         = "AC3"
+            "mp3"         = "MP3"
+            "aac"         = "AAC"
+            "wmv"         = "WMV"
+        }
+
+        foreach ($pattern in $audioTargets.Keys) {
+            if ($audioEncoder -match $pattern) {
+                $targetAudio = $audioTargets[$pattern]
+                $baseName = $baseName -replace "(DD\+|FLAC|DTS[-\s]?HD\s?MA|LPCM|AC3|AAC|MP3|Opus)", $targetAudio
+                break
+            }
+        }
+    }
+
+    if ($renameOutputFile) {
+        Write-ColoredHost "Renaming to: $baseName$fileExtension" -ForegroundColor Cyan
+    }
+
+    $outputFileName = "$baseName$fileExtension"
+    $outputFilePath = Join-Path -Path $outputDir -ChildPath $outputFileName
+
     $n = 1
     while (Test-Path $outputFilePath) {
-        $outputFilePath = Join-Path -Path $outputDir -ChildPath "$outputFileName-$n$fileExtension"
+        $outputFilePath = Join-Path -Path $outputDir -ChildPath "$baseName-$n$fileExtension"
         $n++
     }
-    
-    return $outputFilePath
-}
 
-# to-be-deleted Directory Setup
-$toDeleteDir = Join-Path -Path $scriptDir -ChildPath $globalConfig.toDeleteDirectory
-if (-not (Test-Path $toDeleteDir)) {
-    New-Item -Path $toDeleteDir -ItemType Directory | Out-Null
+    return $outputFilePath
 }
 
 # List files to process
@@ -625,8 +685,7 @@ function Show-FilesToProcess {
         [string]$scriptDir,
         [string]$outputDir
     )
-    $filesToProcess = Get-ChildItem -Path $scriptDir -Include *.mp4, *.mkv -File -Recurse -ErrorAction SilentlyContinue
-    $filesToProcess = $filesToProcess | Where-Object { $_.DirectoryName -ne $outputDir }
+    $filesToProcess = Get-InputFiles -scriptDir $scriptDir
     Write-ColoredHost "Files found:" -ForegroundColor Yellow
     Write-ColoredHost "------------" -ForegroundColor Yellow
     if ($filesToProcess.Count -eq 0) {
@@ -674,14 +733,20 @@ function Use-Files {
 # Move original file if deleteOriginals is true
 function Move-OriginalFile {
     param (
-        [string]$filePath
+        [string]$filePath,
+        [string]$toDeleteDir
     )
     if ($globalConfig.deleteOriginals) {
+        if (-not (Test-Path $toDeleteDir)) {
+            New-Item -Path $toDeleteDir -ItemType Directory | Out-Null
+        }
+
         $dest = Join-Path -Path $toDeleteDir -ChildPath (Split-Path $filePath -Leaf)
         Move-Item -Path $filePath -Destination $dest -Force
         Write-Host "Moved original to: $dest" -ForegroundColor DarkGray
     }
 }
+
 
 function Get-Codec {
     param (
@@ -758,7 +823,10 @@ function Invoke-WithHandBrake {
     $summary = @()
 
     foreach ($inputFile in $inputFiles) {
-        $outputPath = Set-OutputFileName -inputFilePath $inputFile.FullName
+
+        $encoderUsed = if ($NVENC) { $handbrakeEncoderNVENC } else { $handbrakeEncoder }
+
+        $outputPath = Set-OutputFileName -inputFilePath $inputFile.FullName -encoderUsed $encoderUsed
         $outputFile = [PSCustomObject]@{
             FullPath = $outputPath
             Name     = [System.IO.Path]::GetFileName($outputPath)
@@ -785,8 +853,7 @@ function Invoke-WithHandBrake {
                 ReductionPercent = "$reduction%"
             }
 
-            Move-OriginalFile $inputFile.FullName
-
+            Move-OriginalFile $inputFile.FullName $toDeleteDir
         } else {
             $encoderType = if ($NVENC) { "(NVENC)" } else { "" }
             Write-ColoredHost "HandBrake $encoderType failed on: $($inputFile.Name)" -ForegroundColor Red
@@ -795,6 +862,7 @@ function Invoke-WithHandBrake {
 
     Show-EncodingSummary -SummaryList $summary
 }
+
 
 # Function to encode using FFmpeg
 
@@ -807,7 +875,10 @@ function Invoke-WithFFmpeg {
     $summary = @()
 
     foreach ($inputFile in $inputFiles) {
-        $outputPath = Set-OutputFileName -inputFilePath $inputFile.FullName
+
+        $encoderUsed = if ($NVENC) { $ffmpegEncoderNVENC } else { $ffmpegEncoder }
+
+        $outputPath = Set-OutputFileName -inputFilePath $inputFile.FullName -encoderUsed $encoderUsed
         $outputFile = [PSCustomObject]@{
             FullPath = $outputPath
             Name     = [System.IO.Path]::GetFileName($outputPath)
@@ -834,11 +905,10 @@ function Invoke-WithFFmpeg {
                 ReductionPercent = "$reduction%"
             }
 
-            Move-OriginalFile $inputFile.FullName
-            
+            Move-OriginalFile $inputFile.FullName $toDeleteDir
         } else {
             $encoderType = if ($NVENC) { "(NVENC)" } else { "" }
-            Write-ColoredHost "HandBrake $encoderType failed on: $($inputFile.Name)" -ForegroundColor Red
+            Write-ColoredHost "FFmpeg $encoderType failed on: $($inputFile.Name)" -ForegroundColor Red
         }
     }
 
@@ -889,12 +959,13 @@ function Write-ColoredPercentage {
 }
 
 function Show-EncodingSummary {
-    Clear-Host
-    Show-Header
     param (
         [Parameter(Mandatory = $true)]
         [array]$SummaryList
     )
+
+    #Clear-Host
+    #Show-Header
 
     if ($SummaryList.Count -eq 0) {
         Write-Host "`nNo files were successfully encoded, so no summary to show." -ForegroundColor Yellow
