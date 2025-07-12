@@ -1,51 +1,6 @@
 # Define the script version as a variable
 $ScriptVersion = "1.6.0"
 
-# Define essential functions first
-function Write-ColoredHost {
-    param (
-        [string]$Text,
-        [ConsoleColor]$ForegroundColor = 'White',
-        [ConsoleColor]$BackgroundColor = 'Black'
-    )
-    Write-Host $Text -ForegroundColor $ForegroundColor -BackgroundColor $BackgroundColor
-}
-
-function Handle-Error {
-    param (
-        [string]$ErrorMessage,
-        [string]$Operation,
-        [System.Management.Automation.ErrorRecord]$ErrorRecord = $null,
-        [switch]$Fatal
-    )
-    
-    $detailedMessage = "Error during $Operation`: $ErrorMessage"
-    
-    # Add error record details if available
-    if ($ErrorRecord) {
-        $detailedMessage += "`nException Type: $($ErrorRecord.Exception.GetType().Name)"
-        $detailedMessage += "`nException Message: $($ErrorRecord.Exception.Message)"
-        $detailedMessage += "`nCategory: $($ErrorRecord.CategoryInfo.Category)"
-        $detailedMessage += "`nActivity: $($ErrorRecord.CategoryInfo.Activity)"
-        
-        if ($globalConfig.verboseLogging) {
-            $detailedMessage += "`nStack Trace:`n$($ErrorRecord.ScriptStackTrace)"
-        }
-    }
-    
-    # Log the error
-    Write-Log -Message $detailedMessage -Level "ERROR" -NoConsole
-    
-    # User-friendly message to console
-    Write-ColoredHost "Error during ${Operation}: $ErrorMessage" -ForegroundColor Red
-    
-    # Exit script if it's a fatal error
-    if ($Fatal) {
-        Write-ColoredHost "Fatal error occurred. Check the log file for details: $logFile" -ForegroundColor Red
-        exit 1
-    }
-}
-
 <#
 Script Name: JEncoder
 Author: Jarsky
@@ -233,45 +188,6 @@ foreach ($key in $globalConfig.Keys) {
     Set-Variable -Name $key -Value $globalConfig[$key] -Scope Global
 }
 
-# Define the logging function first
-function Write-Log {
-    param (
-        [string]$Message,
-        [string]$Level = "INFO",
-        [switch]$NoConsole
-    )
-    
-    if (-not $globalConfig -or $globalConfig.enableLogging) {
-        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        $logEntry = "[$timestamp] [$Level] $Message"
-        
-        # Log to file
-        Add-Content -Path $logFile -Value $logEntry
-        
-        # Output to console if not suppressed
-        if (-not $NoConsole) {
-            $foregroundColor = switch ($Level) {
-                "ERROR"   { "Red" }
-                "WARNING" { "Yellow" }
-                "SUCCESS" { "Green" }
-                default   { "White" }
-            }
-            
-            Write-ColoredHost $Message -ForegroundColor $foregroundColor
-        }
-    } elseif (-not $NoConsole) {
-        # Still output to console if logging is disabled
-        $foregroundColor = switch ($Level) {
-            "ERROR"   { "Red" }
-            "WARNING" { "Yellow" }
-            "SUCCESS" { "Green" }
-            default   { "White" }
-        }
-        
-        Write-ColoredHost $Message -ForegroundColor $foregroundColor
-    }
-}
-
 # Initialize log file
 if ($globalConfig.enableLogging) {
     # Get date for log rotation
@@ -312,7 +228,14 @@ $script:mkvpropeditPath  = Join-Path $script:encoderDir "mkvpropedit.exe"
 
 ### MAIN SCRIPT ###
 
-# Function will be defined at the beginning of the script
+function Write-ColoredHost {
+    param (
+        [string]$Text,
+        [ConsoleColor]$ForegroundColor = 'White',
+        [ConsoleColor]$BackgroundColor = 'Black'
+    )
+    Write-Host $Text -ForegroundColor $ForegroundColor -BackgroundColor $BackgroundColor
+}
 
 function Confirm-Encoders {
     $missingEncoders = @()
@@ -768,7 +691,7 @@ function Set-OutputFileName {
     }
 
     if ($renameOutputFile) {
-        Write-Log "Renaming to: $baseName$fileExtension" -Level "INFO"
+        Write-ColoredHost "Renaming to: $baseName$fileExtension" -ForegroundColor Cyan
     }
 
     $outputFileName = "$baseName$fileExtension"
@@ -794,10 +717,15 @@ function Show-FilesToProcess {
     Write-ColoredHost "------------" -ForegroundColor Yellow
     if ($filesToProcess.Count -eq 0) {
         Write-ColoredHost "None" -ForegroundColor White
-        Write-ColoredHost "No .mp4 or .mkv files were found in the script directory." -ForegroundColor Yellow
-        Write-ColoredHost "You can still configure the application or use other features." -ForegroundColor Yellow
     } else {
         $filesToProcess | ForEach-Object { Write-ColoredHost $_.Name -ForegroundColor White }
+        Write-ColoredHost "" -ForegroundColor White
+    }
+    if ($filesToProcess.Count -eq 0) {
+        Write-ColoredHost "No .mp4 or .mkv files were found in the script directory." -ForegroundColor Red
+        Write-ColoredHost "Press any key to exit..." -ForegroundColor White
+        [System.Console]::ReadKey() | Out-Null
+        exit
     }
     Write-Host ""
 }
@@ -842,7 +770,7 @@ function Move-OriginalFile {
 
         $dest = Join-Path -Path $toDeleteDir -ChildPath (Split-Path $filePath -Leaf)
         Move-Item -Path $filePath -Destination $dest -Force
-        Write-Log "Moved original to: $dest" -Level "INFO"
+        Write-Host "Moved original to: $dest" -ForegroundColor DarkGray
     }
 }
 
@@ -870,7 +798,7 @@ function Update-SubtitleFlags {
     )
 
     if (-not (Test-Path $filePath)) {
-        Write-Log "File not found: $filePath" -Level "WARNING"
+        Write-Warning "File not found: $filePath"
         return
     }
     # Assumes Get-SubtitleInfo returns a list of subtitle track info with properties like index and codec_name
@@ -889,7 +817,7 @@ function Update-SubtitleFlags {
 
     if ($commands.Count -gt 0) {
         if (-not $Global:mkvpropeditPath) {
-            Write-Log "mkvpropeditPath is not set. Please define it before calling this function." -Level "WARNING"
+            Write-Warning "mkvpropeditPath is not set. Please define it before calling this function."
             return
         }
 
@@ -897,17 +825,17 @@ function Update-SubtitleFlags {
         $quotedMkvpropeditPath = "`"$Global:mkvpropeditPath`""
         $mkvpropeditArgs = $commands -join ' '
 
-        Write-Log "Updating subtitle flags with mkvpropedit..." -Level "INFO"
-        Write-Log "$quotedMkvpropeditPath $quotedFilePath $mkvpropeditArgs" -Level "INFO" -NoConsole
+        Write-Host "Updating subtitle flags with mkvpropedit..." -ForegroundColor Cyan
+        Write-Host "$quotedMkvpropeditPath $quotedFilePath $mkvpropeditArgs" -ForegroundColor Cyan
 
         try {
             Start-Process -FilePath $quotedMkvpropeditPath -ArgumentList "$quotedFilePath $mkvpropeditArgs" -NoNewWindow -Wait
-            Write-Log "Subtitle flags updated successfully." -Level "SUCCESS"
+            Write-Host "Subtitle flags updated successfully." -ForegroundColor Green
         } catch {
-            Handle-Error -ErrorMessage "Failed to update subtitle flags" -Operation "Subtitle Processing" -ErrorRecord $_
+            Write-Error "Failed to update subtitle flags: $_"
         }
     } else {
-        Write-Log "No 'subrip' subtitle tracks found that require flag updates." -Level "INFO"
+        Write-Host "No 'subrip' subtitle tracks found that require flag updates." -ForegroundColor Yellow
     }
 }
 
@@ -1007,7 +935,38 @@ function Get-ProjectedFileSize {
     }
 }
 
-# Progress parsing is now handled by ScriptBlocks in the Invoke-Encoding function
+function Parse-HandBrakeProgress {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Line
+    )
+    
+    if ($Line -match '(\d+\.\d+) %') {
+        return [double]$Matches[1]
+    }
+    return -1
+}
+
+function Parse-FFmpegProgress {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Line,
+        [Parameter(Mandatory = $true)]
+        [double]$TotalDuration
+    )
+    
+    if ($Line -match 'time=(\d+):(\d+):(\d+\.\d+)') {
+        $hours = [double]$Matches[1]
+        $minutes = [double]$Matches[2]
+        $seconds = [double]$Matches[3]
+        $currentTime = ($hours * 3600) + ($minutes * 60) + $seconds
+        
+        if ($TotalDuration -gt 0) {
+            return ($currentTime / $TotalDuration) * 100
+        }
+    }
+    return -1
+}
 
 function Get-MediaDuration {
     param (
@@ -1049,421 +1008,129 @@ function Invoke-WithHandBrake {
     param (
         [switch]$NVENC
     )
-    
-    Invoke-Encoding -EncoderType "HandBrake" -NVENC:$NVENC
-}
 
-# Function to encode using FFmpeg
-
-function Invoke-WithFFmpeg {
-    param (
-        [switch]$NVENC
-    )
-    
-    Invoke-Encoding -EncoderType "FFmpeg" -NVENC:$NVENC
-}
-
-function Invoke-Encoding {
-    param (
-        [Parameter(Mandatory = $true)]
-        [ValidateSet("HandBrake", "FFmpeg")]
-        [string]$EncoderType,
-        
-        [switch]$NVENC
-    )
-    
     $inputFiles = Get-InputFiles
     $summary = @()
-    
-    # Set encoder specific parameters
-    if ($EncoderType -eq "HandBrake") {
-        $encoderPath = $handbrakePath
-        $encoderUsed = if ($NVENC) { $handbrakeEncoderNVENC } else { $handbrakeEncoder }
-        $encoderPreset = if ($NVENC) { $handbrakeNVENCPreset } else { $handbrakePreset }
-        $qualityValue = $handbrakeQuality
-        $method = if ($NVENC) { "HandBrakeCLI (NVENC)" } else { "HandBrakeCLI" }
-        
-        $createArguments = {
-            param($inputFile, $outputFile)
-            
-            if ($NVENC) {
-                return "-i `"$($inputFile.FullName)`" -o `"$($outputFile.FullPath)`" -e $handbrakeEncoderNVENC --encoder-preset $handbrakeNVENCPreset -q $handbrakeQuality --cfr --all-audio --all-subtitles"
-            } else {
-                return "-i `"$($inputFile.FullName)`" -o `"$($outputFile.FullPath)`" -e $handbrakeEncoder --encoder-preset $handbrakePreset -q $handbrakeQuality --cfr --all-audio --all-subtitles"
-            }
-        }
-        
-        $parseProgress = {
-            param($data)
-            
-            # HandBrake outputs progress like: "Encoding: task 1 of 1, 45.67 % (159.45 fps, avg 140.32 fps, ETA 00h03m12s)"
-            if ($data -match 'Encoding: task \d+ of \d+, (\d+\.\d+) %') {
-                return [double]$Matches[1]
-            }
-            # Alternative format: "Encoding: task 1 of 1, 45.67 %"
-            if ($data -match '(\d+\.\d+) %') {
-                return [double]$Matches[1]
-            }
-            return -1
-        }
-    }
-    else { # FFmpeg
-        $encoderPath = $ffmpegPath
-        $encoderUsed = if ($NVENC) { $ffmpegEncoderNVENC } else { $ffmpegEncoder }
-        $encoderPreset = if ($NVENC) { $ffmpegNVENCPreset } else { $ffmpegPreset }
-        $qualityValue = $ffmpegQuality
-        $method = if ($NVENC) { "FFmpeg (NVENC)" } else { "FFmpeg (CPU)" }
-        
-        $createArguments = {
-            param($inputFile, $outputFile)
-            
-            if ($NVENC) {
-                return "-i `"$($inputFile.FullName)`" -map 0 -c:v $ffmpegEncoderNVENC -cq $ffmpegQuality -preset $ffmpegNVENCPreset -c:a $audioEncoder -c:s copy -disposition:s:0 0 -max_muxing_queue_size 9999 `"$($outputFile.FullPath)`""
-            } else {
-                return "-hide_banner -i `"$($inputFile.FullName)`" -c:v $ffmpegEncoder -preset $ffmpegPreset -crf $ffmpegQuality -c:a copy -c:s copy `"$($outputFile.FullPath)`""
-            }
-        }
-        
-        $parseProgress = {
-            param($data, $duration)
-            
-            # Parse time from FFmpeg stderr output: "frame= 1234 fps= 56 q=23.0 size=   12345kB time=00:01:23.45 bitrate=1234.5kbits/s speed=1.23x"
-            if ($data -match 'time=(\d+):(\d+):(\d+\.\d+)') {
-                $hours = [double]$Matches[1]
-                $minutes = [double]$Matches[2] 
-                $seconds = [double]$Matches[3]
-                $currentTime = ($hours * 3600) + ($minutes * 60) + $seconds
-                
-                if ($duration -gt 0) {
-                    return ($currentTime / $duration) * 100
-                }
-            }
-            return -1
-        }
-    }
-    
+
     foreach ($inputFile in $inputFiles) {
-        Show-FilesToProcess -scriptDir $scriptDir -outputDir $outputDir
+        $encoderUsed = if ($NVENC) { $handbrakeEncoderNVENC } else { $handbrakeEncoder }
+        $encoderQuality = if ($NVENC) { $handbrakeNVENCPreset } else { $handbrakePreset }
+        $qualityValue = $handbrakeQuality
+
         $outputPath = Set-OutputFileName -inputFilePath $inputFile.FullName -encoderUsed $encoderUsed
         $outputFile = [PSCustomObject]@{
             FullPath = $outputPath
             Name     = [System.IO.Path]::GetFileName($outputPath)
         }
-        
-        # Get file duration for progress calculation
-        $duration = Get-MediaDuration -FilePath $inputFile.FullName
-        
+
+        $method = if ($NVENC) { "HandBrakeCLI (NVENC)" } else { "HandBrakeCLI" }
         $projectedSize = Get-ProjectedFileSize -InputFilePath $inputFile.FullName -Encoder $encoderUsed -Quality $qualityValue
         $projectedSizeStr = Get-HumanReadableSize -Size $projectedSize
-        $inputSize = (Get-Item $inputFile.FullName).Length
-        $inputSizeStr = Get-HumanReadableSize -Size $inputSize
-        $diffPercent = if ($inputSize -gt 0) { [math]::Round((($projectedSize - $inputSize) / $inputSize) * 100, 1) } else { 0 }
-        $diffSign = if ($diffPercent -ge 0) { "+" } else { "" }
-        Write-ColoredHost ("Original size: $inputSizeStr    Projected size: $projectedSizeStr    Est. Difference: $diffSign$diffPercent%") -ForegroundColor Yellow
-        Write-ColoredHost ("Output: $($outputFile.Name)") -ForegroundColor Cyan
-        Write-ColoredHost ("Press Q to abort encoding...") -ForegroundColor Red
-        if (-not ([System.Management.Automation.PSTypeName]'System.Console').Type) {
-            Write-ColoredHost ("[Warning] Q abort may not work in this host. Use Ctrl+C to abort if needed.") -ForegroundColor Yellow
-        }
+        
+        Write-Log "Starting encode: $($inputFile.Name) using $method" -Level "INFO"
+        Write-Log "Output: $($outputFile.Name)" -Level "INFO"
+        Write-Log "Projected size: $projectedSizeStr" -Level "INFO"
         
         try {
-            # Build process arguments
-            $arguments = & $createArguments $inputFile $outputFile
-            
-            # Variables for progress tracking
-            $lastProgress = 0
-            $startTime = Get-Date
-            $progressReadings = @()
-            $progressBarLength = 20
-            $allOutput = @()
-            
             # Start process with redirected output
             $psi = New-Object System.Diagnostics.ProcessStartInfo
-            $psi.FileName = $encoderPath
-            $psi.Arguments = $arguments
+            $psi.FileName = $handbrakePath
+            if ($NVENC) {
+                $psi.Arguments = "-i `"$($inputFile.FullName)`" -o `"$($outputFile.FullPath)`" -e $handbrakeEncoderNVENC --encoder-preset $handbrakeNVENCPreset -q $handbrakeQuality --cfr --all-audio --all-subtitles"
+            } else {
+                $psi.Arguments = "-i `"$($inputFile.FullName)`" -o `"$($outputFile.FullPath)`" -e $handbrakeEncoder --encoder-preset $handbrakePreset -q $handbrakeQuality --cfr --all-audio --all-subtitles"
+            }
             $psi.UseShellExecute = $false
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
             $psi.CreateNoWindow = $true
             
-            Write-Log "Executing $EncoderType with arguments: $arguments" -Level "INFO" -NoConsole
+            Write-Log "Executing HandBrakeCLI with arguments: $($psi.Arguments)" -Level "INFO" -NoConsole
             
             $process = New-Object System.Diagnostics.Process
             $process.StartInfo = $psi
             $process.Start() | Out-Null
-            $global:CurrentEncodingProcess = $process
             
-            # Create StringBuilder objects for accumulating partial lines
-            $stdoutBuffer = New-Object System.Text.StringBuilder
-            $stderrBuffer = New-Object System.Text.StringBuilder
+            # Setup progress tracking
+            $startTime = Get-Date
+            $lastProgress = 0
+            $lastTime = $startTime
+            $progressReadings = @()
             
-            # Byte buffers for reading
-            $stdoutBytes = New-Object byte[] 1024
-            $stderrBytes = New-Object byte[] 1024
+            # Async reading of output
+            $outputReader = $process.StandardOutput
+            $errorReader = $process.StandardError
             
             while (-not $process.HasExited) {
-                $dataReceived = $false
+                $line = if ($errorReader.Peek() -gt 0) { $errorReader.ReadLine() } else { $outputReader.ReadLine() }
                 
-                # Read from stdout (non-blocking)
-                try {
-                    $stream = $process.StandardOutput.BaseStream
-                    if ($stream.DataAvailable) {
-                        $bytesRead = $stream.Read($stdoutBytes, 0, $stdoutBytes.Length)
-                        if ($bytesRead -gt 0) {
-                            $text = [System.Text.Encoding]::UTF8.GetString($stdoutBytes, 0, $bytesRead)
-                            $stdoutBuffer.Append($text) | Out-Null
-                            $dataReceived = $true
+                if ($line) {
+                    # Log verbose output if enabled
+                    if ($globalConfig.verboseLogging) {
+                        Write-Log $line -Level "INFO" -NoConsole
+                    }
+                    
+                    $progress = Parse-HandBrakeProgress -Line $line
+                    
+                    if ($progress -ge 0 -and $progress -gt $lastProgress) {
+                        $currentTime = Get-Date
+                        $elapsedTime = ($currentTime - $startTime).TotalSeconds
+                        $remainingTime = ($elapsedTime / $progress) * (100 - $progress)
+                        
+                        # Record this reading for better ETA calculation
+                        if ($progressReadings.Count -ge 10) { 
+                            $progressReadings = $progressReadings[1..9] 
+                        }
+                        $progressReadings += [PSCustomObject]@{
+                            Progress = $progress
+                            Time = $currentTime
+                        }
+                        
+                        # Calculate average speed from recent readings
+                        if ($progressReadings.Count -gt 1) {
+                            $oldestReading = $progressReadings[0]
+                            $progressDiff = $progress - $oldestReading.Progress
+                            $timeDiff = ($currentTime - $oldestReading.Time).TotalSeconds
                             
-                            # Process complete lines
-                            $bufferText = $stdoutBuffer.ToString()
-                            $lines = $bufferText -split "`r`n|`n|`r"
-                            
-                            # Keep the last incomplete line in the buffer
-                            if ($bufferText.EndsWith("`r") -or $bufferText.EndsWith("`n")) {
-                                $stdoutBuffer.Clear() | Out-Null
-                                $linesToProcess = $lines
-                            } else {
-                                $stdoutBuffer.Clear() | Out-Null
-                                $stdoutBuffer.Append($lines[-1]) | Out-Null
-                                $linesToProcess = $lines[0..($lines.Length - 2)]
-                            }
-                            
-                            # Process each complete line
-                            foreach ($line in $linesToProcess) {
-                                if ($line) {
-                                    $allOutput += $line
-                                    if ($globalConfig.verboseLogging) {
-                                        Write-Log $line -Level "INFO" -NoConsole
-                                    }
-                                    
-                                    # For HandBrake, progress comes from stdout
-                                    if ($EncoderType -eq "HandBrake") {
-                                        $progress = & $parseProgress $line
-                                        if ($progress -ge 0 -and $progress -gt $lastProgress) {
-                                            $currentTime = Get-Date
-                                            $elapsedTime = ($currentTime - $startTime).TotalSeconds
-                                            
-                                            # Update progress readings for ETA calculation
-                                            if ($progressReadings.Count -ge 10) { 
-                                                $progressReadings = $progressReadings[1..9] 
-                                            }
-                                            $progressReadings += [PSCustomObject]@{
-                                                Progress = $progress
-                                                Time = $currentTime
-                                            }
-                                            
-                                            $remainingTime = if ($progressReadings.Count -gt 1) {
-                                                $oldestReading = $progressReadings[0]
-                                                $progressDiff = $progress - $oldestReading.Progress
-                                                $timeDiff = ($currentTime - $oldestReading.Time).TotalSeconds
-                                                if ($timeDiff -gt 0 -and $progressDiff -gt 0) {
-                                                    ($timeDiff / $progressDiff) * (100 - $progress)
-                                                } else {
-                                                    if ($progress -gt 0) { ($elapsedTime / $progress) * (100 - $progress) } else { 0 }
-                                                }
-                                            } else {
-                                                if ($progress -gt 0) { ($elapsedTime / $progress) * (100 - $progress) } else { 0 }
-                                            }
-                                            
-                                            $eta = Format-TimeRemaining -SecondsRemaining $remainingTime
-                                            $bar = Get-ProgressBar -Percent $progress -BarLength $progressBarLength
-                                            $progressStr = "{0,5:N1}%" -f $progress
-                                            $status = "$bar $progressStr | ETA: $eta"
-                                            Write-Host -NoNewline "`r$status"
-                                            $lastProgress = $progress
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            # Also check for progress in partial buffer content for real-time updates
-                            $currentBufferContent = $stdoutBuffer.ToString()
-                            if ($currentBufferContent -and $EncoderType -eq "HandBrake") {
-                                $progress = & $parseProgress $currentBufferContent
-                                if ($progress -ge 0 -and $progress -gt $lastProgress) {
-                                    $currentTime = Get-Date
-                                    $elapsedTime = ($currentTime - $startTime).TotalSeconds
-                                    
-                                    if ($progressReadings.Count -ge 10) { 
-                                        $progressReadings = $progressReadings[1..9] 
-                                    }
-                                    $progressReadings += [PSCustomObject]@{
-                                        Progress = $progress
-                                        Time = $currentTime
-                                    }
-                                    
-                                    $remainingTime = if ($progressReadings.Count -gt 1) {
-                                        $oldestReading = $progressReadings[0]
-                                        $progressDiff = $progress - $oldestReading.Progress
-                                        $timeDiff = ($currentTime - $oldestReading.Time).TotalSeconds
-                                        if ($timeDiff -gt 0 -and $progressDiff -gt 0) {
-                                            ($timeDiff / $progressDiff) * (100 - $progress)
-                                        } else {
-                                            if ($progress -gt 0) { ($elapsedTime / $progress) * (100 - $progress) } else { 0 }
-                                        }
-                                    } else {
-                                        if ($progress -gt 0) { ($elapsedTime / $progress) * (100 - $progress) } else { 0 }
-                                    }
-                                    
-                                    $eta = Format-TimeRemaining -SecondsRemaining $remainingTime
-                                    $bar = Get-ProgressBar -Percent $progress -BarLength $progressBarLength
-                                    $progressStr = "{0,5:N1}%" -f $progress
-                                    $status = "$bar $progressStr | ETA: $eta"
-                                    Write-Host -NoNewline "`r$status"
-                                    $lastProgress = $progress
-                                }
+                            if ($timeDiff -gt 0 -and $progressDiff -gt 0) {
+                                $remainingTime = ($timeDiff / $progressDiff) * (100 - $progress)
                             }
                         }
+                        
+                        $eta = Format-TimeRemaining -SecondsRemaining $remainingTime
+                        $status = "Encoding with $method | ETA: $eta | Projected size: $projectedSizeStr"
+                        
+                        Write-Progress -Activity "Encoding $($inputFile.Name)" -Status $status -PercentComplete $progress
+                        $lastProgress = $progress
+                        $lastTime = $currentTime
                     }
-                } catch {
-                    # Stream reading error or end of stream
-                }
-                
-                # Read from stderr (non-blocking)
-                try {
-                    $stream = $process.StandardError.BaseStream
-                    if ($stream.DataAvailable) {
-                        $bytesRead = $stream.Read($stderrBytes, 0, $stderrBytes.Length)
-                        if ($bytesRead -gt 0) {
-                            $text = [System.Text.Encoding]::UTF8.GetString($stderrBytes, 0, $bytesRead)
-                            $stderrBuffer.Append($text) | Out-Null
-                            $dataReceived = $true
-                            
-                            # Process complete lines
-                            $bufferText = $stderrBuffer.ToString()
-                            $lines = $bufferText -split "`r`n|`n|`r"
-                            
-                            # Keep the last incomplete line in the buffer
-                            if ($bufferText.EndsWith("`r") -or $bufferText.EndsWith("`n")) {
-                                $stderrBuffer.Clear() | Out-Null
-                                $linesToProcess = $lines
-                            } else {
-                                $stderrBuffer.Clear() | Out-Null
-                                $stderrBuffer.Append($lines[-1]) | Out-Null
-                                $linesToProcess = $lines[0..($lines.Length - 2)]
-                            }
-                            
-                            # Process each complete line
-                            foreach ($line in $linesToProcess) {
-                                if ($line) {
-                                    $allOutput += $line
-                                    if ($globalConfig.verboseLogging) {
-                                        Write-Log $line -Level "INFO" -NoConsole
-                                    }
-                                    
-                                    # For FFmpeg, progress comes from stderr
-                                    if ($EncoderType -eq "FFmpeg") {
-                                        $progress = & $parseProgress $line $duration
-                                        if ($progress -ge 0 -and $progress -gt $lastProgress) {
-                                            $currentTime = Get-Date
-                                            $elapsedTime = ($currentTime - $startTime).TotalSeconds
-                                            
-                                            # Update progress readings for ETA calculation
-                                            if ($progressReadings.Count -ge 10) { 
-                                                $progressReadings = $progressReadings[1..9] 
-                                            }
-                                            $progressReadings += [PSCustomObject]@{
-                                                Progress = $progress
-                                                Time = $currentTime
-                                            }
-                                            
-                                            $remainingTime = if ($progressReadings.Count -gt 1) {
-                                                $oldestReading = $progressReadings[0]
-                                                $progressDiff = $progress - $oldestReading.Progress
-                                                $timeDiff = ($currentTime - $oldestReading.Time).TotalSeconds
-                                                if ($timeDiff -gt 0 -and $progressDiff -gt 0) {
-                                                    ($timeDiff / $progressDiff) * (100 - $progress)
-                                                } else {
-                                                    if ($progress -gt 0) { ($elapsedTime / $progress) * (100 - $progress) } else { 0 }
-                                                }
-                                            } else {
-                                                if ($progress -gt 0) { ($elapsedTime / $progress) * (100 - $progress) } else { 0 }
-                                            }
-                                            
-                                            $eta = Format-TimeRemaining -SecondsRemaining $remainingTime
-                                            $bar = Get-ProgressBar -Percent $progress -BarLength $progressBarLength
-                                            $progressStr = "{0,5:N1}%" -f $progress
-                                            $status = "$bar $progressStr | ETA: $eta"
-                                            Write-Host -NoNewline "`r$status"
-                                            $lastProgress = $progress
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            # Also check for progress in partial buffer content for real-time updates
-                            $currentBufferContent = $stderrBuffer.ToString()
-                            if ($currentBufferContent -and $EncoderType -eq "FFmpeg") {
-                                $progress = & $parseProgress $currentBufferContent $duration
-                                if ($progress -ge 0 -and $progress -gt $lastProgress) {
-                                    $currentTime = Get-Date
-                                    $elapsedTime = ($currentTime - $startTime).TotalSeconds
-                                    
-                                    if ($progressReadings.Count -ge 10) { 
-                                        $progressReadings = $progressReadings[1..9] 
-                                    }
-                                    $progressReadings += [PSCustomObject]@{
-                                        Progress = $progress
-                                        Time = $currentTime
-                                    }
-                                    
-                                    $remainingTime = if ($progressReadings.Count -gt 1) {
-                                        $oldestReading = $progressReadings[0]
-                                        $progressDiff = $progress - $oldestReading.Progress
-                                        $timeDiff = ($currentTime - $oldestReading.Time).TotalSeconds
-                                        if ($timeDiff -gt 0 -and $progressDiff -gt 0) {
-                                            ($timeDiff / $progressDiff) * (100 - $progress)
-                                        } else {
-                                            if ($progress -gt 0) { ($elapsedTime / $progress) * (100 - $progress) } else { 0 }
-                                        }
-                                    } else {
-                                        if ($progress -gt 0) { ($elapsedTime / $progress) * (100 - $progress) } else { 0 }
-                                    }
-                                    
-                                    $eta = Format-TimeRemaining -SecondsRemaining $remainingTime
-                                    $bar = Get-ProgressBar -Percent $progress -BarLength $progressBarLength
-                                    $progressStr = "{0,5:N1}%" -f $progress
-                                    $status = "$bar $progressStr | ETA: $eta"
-                                    Write-Host -NoNewline "`r$status"
-                                    $lastProgress = $progress
-                                }
-                            }
-                        }
-                    }
-                } catch {
-                    # Stream reading error or end of stream
-                }
-                
-                # Check for abort key
-                try {
-                    if ([console]::KeyAvailable) {
-                        $key = [console]::ReadKey($true)
-                        if ($key.KeyChar -eq 'q' -or $key.KeyChar -eq 'Q') {
-                            Write-ColoredHost "`nEncoding aborted by user." -ForegroundColor Red
-                            $process.Kill()
-                            break
-                        }
-                    }
-                } catch {
-                    # KeyAvailable not supported in this host, do nothing
-                }
-                
-                # Small sleep to prevent busy waiting when no data is available
-                if (-not $dataReceived) {
-                    Start-Sleep -Milliseconds 50
+                    
+                    # Small sleep to prevent CPU hogging
+                    Start-Sleep -Milliseconds 100
                 }
             }
             
-            $global:CurrentEncodingProcess = $null
-            Write-Host "" # Move to next line after progress bar
+            Write-Progress -Activity "Encoding $($inputFile.Name)" -Completed
             
-            # Process any remaining buffer content
-            $remainingStdout = $stdoutBuffer.ToString()
-            $remainingStderr = $stderrBuffer.ToString()
-            if ($remainingStdout) { $allOutput += $remainingStdout }
-            if ($remainingStderr) { $allOutput += $remainingStderr }
+            # Read any remaining output
+            $remainingError = ""
+            while ($errorReader.Peek() -gt 0) { 
+                $line = $errorReader.ReadLine()
+                $remainingError += "$line`n" 
+                if ($globalConfig.verboseLogging) {
+                    Write-Log $line -Level "INFO" -NoConsole
+                }
+            }
             
-            $process.WaitForExit()
+            while ($outputReader.Peek() -gt 0) { 
+                $line = $outputReader.ReadLine()
+                if ($globalConfig.verboseLogging) {
+                    Write-Log $line -Level "INFO" -NoConsole
+                }
+            }
+            
+            $outputReader.Close()
+            $errorReader.Close()
             $exitCode = $process.ExitCode
             $process.Close()
             
@@ -1471,33 +1138,206 @@ function Invoke-Encoding {
                 $inputSize = (Get-Item $inputFile.FullName).Length
                 $outputSize = (Get-Item $outputFile.FullPath).Length
                 $reduction = Get-ReductionPercentage -inputSize $inputSize -outputSize $outputSize
-                
+
                 Write-Log "Converted: $($inputFile.Name) > $($outputFile.Name) using $method" -Level "SUCCESS"
                 Write-Log "Input size: $(Get-HumanReadableSize -Size $inputSize), Output size: $(Get-HumanReadableSize -Size $outputSize), Reduction: $reduction%" -Level "INFO"
-                
+
                 $summary += [PSCustomObject]@{
                     FileName         = $inputFile.Name
                     InputSize        = Get-HumanReadableSize -Size $inputSize
                     OutputSize       = Get-HumanReadableSize -Size $outputSize
                     ReductionPercent = "$reduction%"
                 }
-                
+
                 Move-OriginalFile $inputFile.FullName $toDeleteDir
             } else {
                 $encoderType = if ($NVENC) { "(NVENC)" } else { "" }
-                $errorOutput = $allOutput -join "`n"
-                $errorMsg = "$EncoderType $encoderType failed on: $($inputFile.Name) with exit code $exitCode"
-                if ($errorOutput) {
-                    $errorMsg += "`nError output: $errorOutput"
+                $errorMsg = "HandBrake $encoderType failed on: $($inputFile.Name) with exit code $exitCode"
+                if ($remainingError) {
+                    $errorMsg += "`nError output: $remainingError"
                 }
-                Handle-Error -ErrorMessage $errorMsg -Operation "$EncoderType Encoding"
+                Handle-Error -ErrorMessage $errorMsg -Operation "HandBrake Encoding"
             }
         }
         catch {
-            Handle-Error -ErrorMessage "Failed to process file with $EncoderType" -Operation "$EncoderType Encoding" -ErrorRecord $_
+            Handle-Error -ErrorMessage "Failed to process file with HandBrake" -Operation "HandBrake Encoding" -ErrorRecord $_
         }
     }
-    
+
+    Show-EncodingSummary -SummaryList $summary
+}
+
+
+# Function to encode using FFmpeg
+
+function Invoke-WithFFmpeg {
+    param (
+        [switch]$NVENC
+    )
+
+    $inputFiles = Get-InputFiles
+    $summary = @()
+
+    foreach ($inputFile in $inputFiles) {
+        $encoderUsed = if ($NVENC) { $ffmpegEncoderNVENC } else { $ffmpegEncoder }
+        $encoderPreset = if ($NVENC) { $ffmpegNVENCPreset } else { $ffmpegPreset }
+        $qualityValue = $ffmpegQuality
+
+        $outputPath = Set-OutputFileName -inputFilePath $inputFile.FullName -encoderUsed $encoderUsed
+        $outputFile = [PSCustomObject]@{
+            FullPath = $outputPath
+            Name     = [System.IO.Path]::GetFileName($outputPath)
+        }
+
+        $method = if ($NVENC) { "FFmpeg (NVENC)" } else { "FFmpeg (CPU)" }
+        $duration = Get-MediaDuration -FilePath $inputFile.FullName
+        $projectedSize = Get-ProjectedFileSize -InputFilePath $inputFile.FullName -Encoder $encoderUsed -Quality $qualityValue
+        $projectedSizeStr = Get-HumanReadableSize -Size $projectedSize
+        
+        Write-Log "Starting encode: $($inputFile.Name) using $method" -Level "INFO"
+        Write-Log "Output: $($outputFile.Name)" -Level "INFO"
+        Write-Log "Projected size: $projectedSizeStr" -Level "INFO"
+        
+        try {
+            # Start process with redirected output
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $ffmpegPath
+            if ($NVENC) {
+                $psi.Arguments = "-i `"$($inputFile.FullName)`" -map 0 -c:v $ffmpegEncoderNVENC -cq $ffmpegQuality -preset $ffmpegNVENCPreset -c:a $audioEncoder -c:s copy -disposition:s:0 0 -max_muxing_queue_size 9999 -progress pipe:1 `"$($outputFile.FullPath)`""
+            } else {
+                $psi.Arguments = "-hide_banner -i `"$($inputFile.FullName)`" -c:v $ffmpegEncoder -preset $ffmpegPreset -crf $ffmpegQuality -c:a copy -c:s copy -progress pipe:1 `"$($outputFile.FullPath)`""
+            }
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.CreateNoWindow = $true
+            
+            Write-Log "Executing FFmpeg with arguments: $($psi.Arguments)" -Level "INFO" -NoConsole
+            
+            $process = New-Object System.Diagnostics.Process
+            $process.StartInfo = $psi
+            $process.Start() | Out-Null
+            
+            # Setup progress tracking
+            $startTime = Get-Date
+            $lastProgress = 0
+            $lastTime = $startTime
+            $progressReadings = @()
+            
+            # Async reading of output
+            $outputReader = $process.StandardOutput
+            $errorReader = $process.StandardError
+            
+            while (-not $process.HasExited) {
+                $line = if ($outputReader.Peek() -gt 0) { $outputReader.ReadLine() } else { $errorReader.ReadLine() }
+                
+                if ($line) {
+                    # Log verbose output if enabled
+                    if ($globalConfig.verboseLogging) {
+                        Write-Log $line -Level "INFO" -NoConsole
+                    }
+                    
+                    if ($line -match 'time=(\d+):(\d+):(\d+\.\d+)') {
+                        $hours = [double]$Matches[1]
+                        $minutes = [double]$Matches[2]
+                        $seconds = [double]$Matches[3]
+                        $currentTime = ($hours * 3600) + ($minutes * 60) + $seconds
+                        
+                        $progress = if ($duration -gt 0) { ($currentTime / $duration) * 100 } else { 0 }
+                        
+                        if ($progress -gt $lastProgress) {
+                            $now = Get-Date
+                            $elapsedTime = ($now - $startTime).TotalSeconds
+                            $remainingTime = ($elapsedTime / $progress) * (100 - $progress)
+                            
+                            # Record this reading for better ETA calculation
+                            if ($progressReadings.Count -ge 10) { 
+                                $progressReadings = $progressReadings[1..9] 
+                            }
+                            $progressReadings += [PSCustomObject]@{
+                                Progress = $progress
+                                Time = $now
+                            }
+                            
+                            # Calculate average speed from recent readings
+                            if ($progressReadings.Count -gt 1) {
+                                $oldestReading = $progressReadings[0]
+                                $progressDiff = $progress - $oldestReading.Progress
+                                $timeDiff = ($now - $oldestReading.Time).TotalSeconds
+                                
+                                if ($timeDiff -gt 0 -and $progressDiff -gt 0) {
+                                    $remainingTime = ($timeDiff / $progressDiff) * (100 - $progress)
+                                }
+                            }
+                            
+                            $eta = Format-TimeRemaining -SecondsRemaining $remainingTime
+                            $status = "Encoding with $method | ETA: $eta | Projected size: $projectedSizeStr"
+                            
+                            Write-Progress -Activity "Encoding $($inputFile.Name)" -Status $status -PercentComplete $progress
+                            $lastProgress = $progress
+                            $lastTime = $now
+                        }
+                    }
+                    
+                    # Small sleep to prevent CPU hogging
+                    Start-Sleep -Milliseconds 100
+                }
+            }
+            
+            Write-Progress -Activity "Encoding $($inputFile.Name)" -Completed
+            
+            # Read any remaining output
+            $remainingError = ""
+            while ($errorReader.Peek() -gt 0) { 
+                $line = $errorReader.ReadLine()
+                $remainingError += "$line`n" 
+                if ($globalConfig.verboseLogging) {
+                    Write-Log $line -Level "INFO" -NoConsole
+                }
+            }
+            
+            while ($outputReader.Peek() -gt 0) { 
+                $line = $outputReader.ReadLine()
+                if ($globalConfig.verboseLogging) {
+                    Write-Log $line -Level "INFO" -NoConsole
+                }
+            }
+            
+            $outputReader.Close()
+            $errorReader.Close()
+            $exitCode = $process.ExitCode
+            $process.Close()
+
+            if ($exitCode -eq 0) {
+                $inputSize = (Get-Item $inputFile.FullName).Length
+                $outputSize = (Get-Item $outputFile.FullPath).Length
+                $reduction = Get-ReductionPercentage -inputSize $inputSize -outputSize $outputSize
+
+                Write-Log "Converted: $($inputFile.Name) > $($outputFile.Name) using $method" -Level "SUCCESS"
+                Write-Log "Input size: $(Get-HumanReadableSize -Size $inputSize), Output size: $(Get-HumanReadableSize -Size $outputSize), Reduction: $reduction%" -Level "INFO"
+
+                $summary += [PSCustomObject]@{
+                    FileName         = $inputFile.Name
+                    InputSize        = Get-HumanReadableSize -Size $inputSize
+                    OutputSize       = Get-HumanReadableSize -Size $outputSize
+                    ReductionPercent = "$reduction%"
+                }
+
+                Move-OriginalFile $inputFile.FullName $toDeleteDir
+            } else {
+                $encoderType = if ($NVENC) { "(NVENC)" } else { "" }
+                $errorMsg = "FFmpeg $encoderType failed on: $($inputFile.Name) with exit code $exitCode"
+                if ($remainingError) {
+                    $errorMsg += "`nError output: $remainingError"
+                }
+                Handle-Error -ErrorMessage $errorMsg -Operation "FFmpeg Encoding"
+            }
+        }
+        catch {
+            Handle-Error -ErrorMessage "Failed to process file with FFmpeg" -Operation "FFmpeg Encoding" -ErrorRecord $_
+        }
+    }
+
     Show-EncodingSummary -SummaryList $summary
 }
 
@@ -1542,14 +1382,28 @@ function Get-ReductionPercentage {
     if ($inputSize -eq 0) { return 0 }
     return [math]::Round((($inputSize - $outputSize) / $inputSize) * 100)
 }
-# This function has been replaced by improved logging in Show-EncodingSummary
+function Write-ColoredPercentage {
+    param (
+        [int]$percentageReduction
+    )
+
+    if ($percentageReduction -le 30) {
+        Write-Host -NoNewline "$percentageReduction%" -ForegroundColor Yellow
+    } elseif ($percentageReduction -le 50) {
+        Write-Host -NoNewline "$percentageReduction%" -ForegroundColor Green
+    } else {
+        Write-Host -NoNewline "$percentageReduction%" -ForegroundColor Red
+    }
+}
 
 function Show-EncodingSummary {
     param (
+        [Parameter(Mandatory = $true)]
         [array]$SummaryList
     )
-    if (-not $SummaryList -or $SummaryList.Count -eq 0) {
-        Write-Log "No files were successfully encoded, or encoding was aborted. No summary to show." -Level "WARNING"
+
+    if ($SummaryList.Count -eq 0) {
+        Write-Log "`nNo files were successfully encoded, so no summary to show." -Level "WARNING"
         return
     }
 
@@ -1614,326 +1468,292 @@ function Show-EncodingSummary {
     Show-Header
 }
 
-# Menu system refactoring
-function Show-Menu {
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$Title,
-        
-        [Parameter(Mandatory=$true)]
-        [hashtable]$MenuItems,
-        
-        [string]$ExitOptionText = "Return",
-        
-        [string]$ExitOptionKey = "Q"
-    )
-    
-    Clear-Host
-    Show-Header
-    
-    Write-ColoredHost $Title -ForegroundColor Yellow
-    Write-ColoredHost ("-" * $Title.Length) -ForegroundColor Yellow
-    
-    # Display menu items
-    foreach ($key in $MenuItems.Keys | Sort-Object) {
-        Write-ColoredHost "$key. $($MenuItems[$key])" -ForegroundColor White
-    }
-    
-    # Add exit option
-    Write-ColoredHost "$ExitOptionKey. $ExitOptionText" -ForegroundColor Red
-    Write-Host ""
-    
-    # Get user choice
-    $choice = Read-Host "Enter your choice"
-    Write-Log "Menu choice selected: $choice" -Level "INFO" -NoConsole
-    
-    return $choice
-}
+function Show-EncodingMenu {
+    do {
+        Clear-Host
+        Show-Header
+        Show-FilesToProcess -scriptDir $scriptDir -outputDir $outputDir
+        Write-Host ""
+        Write-ColoredHost "Choose Encoding Method:" -ForegroundColor Yellow
+        Write-ColoredHost "-----------------------" -ForegroundColor Yellow
+        Write-ColoredHost "1. HandBrake (CPU Encoding)" -ForegroundColor White
+        Write-ColoredHost "2. FFmpeg (CPU Encoding)" -ForegroundColor White
+        Write-ColoredHost "3. HandBrake (NVENC - GPU Encoding)" -ForegroundColor White
+        Write-ColoredHost "4. FFmpeg (NVENC - GPU Encoding)" -ForegroundColor White
+        Write-ColoredHost "Q. Return to Main Menu" -ForegroundColor Red
+        Write-Host ""
 
-# Add a new function for the file review step
-function Invoke-ShowFilesToProcess {
-    Write-Host ""
-    Show-FilesToProcess -scriptDir $scriptDir -outputDir $outputDir
-    Write-ColoredHost "" -ForegroundColor White
-    Write-ColoredHost "Press Enter to continue to encoding method selection, or Q to return to the main menu." -ForegroundColor Yellow
-    $input = Read-Host "Your choice"
-    if ($input -eq 'q' -or $input -eq 'Q') {
-        return $false
-    }
-    return $true
-}
+        $choice = Read-Host "Enter your choice"
 
-# In the main menu, update the 'Encode Files' option to use the new flow
-function Invoke-MainMenu {
-    $menuItems = @{
-        "1" = "Encode Files"
-        "2" = "Show Current Configuration"
-        "3" = "Edit Configuration" 
-        "4" = "Advanced Options"
-        "5" = "Check for Updates"
-    }
-    $choice = Show-Menu -Title "Main Menu" -MenuItems $menuItems -ExitOptionText "Quit" -ExitOptionKey "Q"
-    switch ($choice.ToLower()) {
-        "1" {
-            $proceed = Invoke-ShowFilesToProcess
-            if ($proceed) {
-                Invoke-EncodingMenu
+        switch ($choice.ToLower()) {
+            '1' { Invoke-WithHandBrake -NVENC:$false }
+            '2' { Invoke-WithFFmpeg -NVENC:$false }
+            '3' { Invoke-WithHandBrake -NVENC:$true }
+            '4' { Invoke-WithFFmpeg -NVENC:$true }
+            'q' { return }
+            default {
+                Write-ColoredHost "Invalid choice. Please select a valid option." -ForegroundColor Red
+                Start-Sleep -Seconds 1.5
             }
         }
-        "2" { Show-Configuration }
-        "3" { Edit-Configuration }
-        "4" { Invoke-AdvancedMenu }
-        "5" { Invoke-UpdateEncoders -CheckOnly }
-        "q" {
-            Write-ColoredHost "Exiting... Goodbye!" -ForegroundColor Green
-            Start-Sleep 2
-            return $false
-        }
-        default {
-            Write-ColoredHost "Invalid choice. Please try again." -ForegroundColor Red
-            Start-Sleep -Seconds 1.5
-        }
-    }
-    return $true
-}
 
-function Invoke-EncodingMenu {
-    Show-FilesToProcess -scriptDir $scriptDir -outputDir $outputDir
-    
-    # Check if there are files to encode
-    $filesToProcess = Get-InputFiles -scriptDir $scriptDir
-    if ($filesToProcess.Count -eq 0) {
-        Write-ColoredHost "No files available for encoding. Please add media files to continue." -ForegroundColor Red
-        Write-ColoredHost "Press any key to return to the main menu..." -ForegroundColor Yellow
+        Write-ColoredHost "Press any key to continue..." -ForegroundColor Yellow
+        Write-Host ""
         [System.Console]::ReadKey() | Out-Null
-        return
-    }
+    } while ($true)
+}
+
+
+do {
+    Show-Header 
     
-    $menuItems = @{
-        "1" = "HandBrake (CPU Encoding)"
-        "2" = "FFmpeg (CPU Encoding)" 
-        "3" = "HandBrake (NVENC - GPU Encoding)"
-        "4" = "FFmpeg (NVENC - GPU Encoding)"
-    }
+    # Log script startup
+    Write-Log "JEncoder v$ScriptVersion started" -Level "INFO" -NoConsole
     
-    $choice = Show-Menu -Title "Choose Encoding Method" -MenuItems $menuItems -ExitOptionText "Return to Main Menu" -ExitOptionKey "Q"
-    
-    switch ($choice.ToLower()) {
-        "1" { Invoke-WithHandBrake -NVENC:$false }
-        "2" { Invoke-WithFFmpeg -NVENC:$false }
-        "3" { Invoke-WithHandBrake -NVENC:$true }
-        "4" { Invoke-WithFFmpeg -NVENC:$true }
-        "q" { return }
-        default {
-            Write-ColoredHost "Invalid choice. Please select a valid option." -ForegroundColor Red
-            Start-Sleep -Seconds 1.5
-        }
-    }
-    
-    Write-ColoredHost "Press any key to continue..." -ForegroundColor Yellow
+    # Verify encoders are present or download them
+    Get-Encoders 
+
+    # Show files that will be processed
+    Show-FilesToProcess -scriptDir $scriptDir -outputDir $outputDir
+
+    Write-ColoredHost "Main Menu:" -ForegroundColor Yellow
+    Write-ColoredHost "----------" -ForegroundColor Yellow
+    Write-ColoredHost "1. Encode Files" -ForegroundColor White
+    Write-ColoredHost "2. Show Current Configuration" -ForegroundColor White
+    Write-ColoredHost "3. Edit Configuration" -ForegroundColor White
+    Write-ColoredHost "4. Advanced Options" -ForegroundColor White
+    Write-ColoredHost "5. Check for Updates" -ForegroundColor White
+    Write-ColoredHost "Q. Quit" -ForegroundColor Red
     Write-Host ""
-    [System.Console]::ReadKey() | Out-Null
-}
 
-function Invoke-AdvancedMenu {
-    $menuItems = @{
-        "1" = "Analyze Media Files"
-        "2" = "Manage Subtitles"
-        "3" = "Cleanup Temporary Files"
-    }
-    
-    $choice = Show-Menu -Title "Advanced Options" -MenuItems $menuItems -ExitOptionText "Return to Main Menu" -ExitOptionKey "Q"
-    
-    switch ($choice.ToLower()) {
-        "1" { Invoke-MediaAnalysis }
-        "2" { Invoke-SubtitleMenu }
-        "3" { Invoke-CleanupTemp }
-        "q" { return }
-        default {
-            Write-ColoredHost "Invalid choice. Please try again." -ForegroundColor Red
-            Start-Sleep -Seconds 1.5
-            Invoke-AdvancedMenu
-        }
-    }
-}
+    $menuChoice = Read-Host "Enter your choice"
+    Write-Log "Menu choice selected: $menuChoice" -Level "INFO" -NoConsole
 
-function Invoke-MediaAnalysis {
-    Clear-Host
-    Show-Header
-    Write-ColoredHost "Media File Analysis:" -ForegroundColor Yellow
-    Write-ColoredHost "-------------------" -ForegroundColor Yellow
-    
-    $files = Get-InputFiles -scriptDir $scriptDir
-    
-    if ($files.Count -eq 0) {
-        Write-ColoredHost "No media files found for analysis." -ForegroundColor Yellow
-        Write-ColoredHost "Please add .mp4 or .mkv files to the script directory." -ForegroundColor Yellow
-    } else {
-        foreach ($file in $files) {
-            Write-ColoredHost $file.Name -ForegroundColor Cyan
-            
-            # Get basic info using ffprobe
-            $fileInfo = & $ffprobePath -v error -show_format -show_streams -of json "$($file.FullName)" | ConvertFrom-Json
-            
-            $videoStream = $fileInfo.streams | Where-Object { $_.'codec_type' -eq 'video' } | Select-Object -First 1
-            $audioStreams = $fileInfo.streams | Where-Object { $_.'codec_type' -eq 'audio' }
-            $subtitleStreams = $fileInfo.streams | Where-Object { $_.'codec_type' -eq 'subtitle' }
-            
-            # Display file info
-            $duration = [TimeSpan]::FromSeconds([double]$fileInfo.format.duration)
-            $durationStr = if ($duration.TotalHours -ge 1) { 
-                "{0:D2}:{1:D2}:{2:D2}" -f $duration.Hours, $duration.Minutes, $duration.Seconds 
-            } else { 
-                "{0:D2}:{1:D2}" -f $duration.Minutes, $duration.Seconds
-            }
-            
-            Write-Host "  Duration: $durationStr"
-            Write-Host "  Size: $(Get-HumanReadableSize -Size $file.Length)"
-            
-            if ($videoStream) {
-                $videoCodec = $videoStream.codec_name
-                $resolution = "$($videoStream.width)x$($videoStream.height)"
-                Write-Host "  Video: $videoCodec ($resolution)"
-            }
-            
-            if ($audioStreams.Count -gt 0) {
-                Write-Host "  Audio Tracks: $($audioStreams.Count)"
-                foreach ($audio in $audioStreams) {
-                    $index = $audio.index
-                    $codec = $audio.codec_name
-                    $channels = $audio.channels
-                    Write-Host "    [$index] $codec ($channels channels)"
-                }
-            }
-            
-            if ($subtitleStreams.Count -gt 0) {
-                Write-Host "  Subtitle Tracks: $($subtitleStreams.Count)"
-                foreach ($sub in $subtitleStreams) {
-                    $index = $sub.index
-                    $codec = $sub.codec_name
-                    Write-Host "    [$index] $codec"
-                }
-            }
-            
-            Write-Host ""
-        }
-    }
-    
-    Write-Host ""
-    Write-ColoredHost "Press any key to return..." -ForegroundColor Yellow
-    [System.Console]::ReadKey() | Out-Null
-}
-
-function Invoke-SubtitleMenu {
-    $menuItems = @{
-        "1" = "Fix subtitle flags in all files"
-    }
-    
-    $choice = Show-Menu -Title "Subtitle Management" -MenuItems $menuItems -ExitOptionText "Return to Advanced Menu" -ExitOptionKey "Q"
-    
-    switch ($choice.ToLower()) {
-        "1" { 
-            $files = Get-InputFiles -scriptDir $scriptDir
-            
-            if ($files.Count -eq 0) {
-                Write-ColoredHost "No media files found for subtitle processing." -ForegroundColor Yellow
-                Write-ColoredHost "Please add .mp4 or .mkv files to the script directory." -ForegroundColor Yellow
-            } else {
-                $mkvFilesFound = $false
+    switch ($menuChoice.ToLower()) {
+        '1' { Show-EncodingMenu }
+        '2' { Show-Configuration }
+        '3' { Edit-Configuration }
+        '4' {
+            # Advanced Options submenu
+            do {
+                Clear-Host
+                Show-Header
                 
-                foreach ($file in $files) {
-                    if ($file.Extension -eq ".mkv") {
-                        $mkvFilesFound = $true
-                        Write-ColoredHost "Processing subtitle flags in $($file.Name)..." -ForegroundColor Cyan
-                        Update-SubtitleFlags -filePath $file.FullName
-                    } else {
-                        Write-ColoredHost "Skipping $($file.Name) - not an MKV file" -ForegroundColor Yellow
+                Write-ColoredHost "Advanced Options:" -ForegroundColor Yellow
+                Write-ColoredHost "----------------" -ForegroundColor Yellow
+                Write-ColoredHost "1. Analyze Media Files" -ForegroundColor White
+                Write-ColoredHost "2. Manage Subtitles" -ForegroundColor White
+                Write-ColoredHost "3. Cleanup Temporary Files" -ForegroundColor White
+                Write-ColoredHost "Q. Return to Main Menu" -ForegroundColor Red
+                Write-Host ""
+                
+                $advancedChoice = Read-Host "Enter your choice"
+                
+                switch ($advancedChoice.ToLower()) {
+                    '1' {
+                        # Analyze current media files and display info
+                        Clear-Host
+                        Show-Header
+                        Write-ColoredHost "Media File Analysis:" -ForegroundColor Yellow
+                        Write-ColoredHost "-------------------" -ForegroundColor Yellow
+                        
+                        $files = Get-InputFiles -scriptDir $scriptDir
+                        foreach ($file in $files) {
+                            Write-ColoredHost $file.Name -ForegroundColor Cyan
+                            
+                            # Get basic info using ffprobe
+                            $fileInfo = & $ffprobePath -v error -show_format -show_streams -of json "$($file.FullName)" | ConvertFrom-Json
+                            
+                            $videoStream = $fileInfo.streams | Where-Object { $_.'codec_type' -eq 'video' } | Select-Object -First 1
+                            $audioStreams = $fileInfo.streams | Where-Object { $_.'codec_type' -eq 'audio' }
+                            $subtitleStreams = $fileInfo.streams | Where-Object { $_.'codec_type' -eq 'subtitle' }
+                            
+                            # Display file info
+                            $duration = [TimeSpan]::FromSeconds([double]$fileInfo.format.duration)
+                            $durationStr = if ($duration.TotalHours -ge 1) { 
+                                "{0:D2}:{1:D2}:{2:D2}" -f $duration.Hours, $duration.Minutes, $duration.Seconds 
+                            } else { 
+                                "{0:D2}:{1:D2}" -f $duration.Minutes, $duration.Seconds
+                            }
+                            
+                            Write-Host "  Duration: $durationStr"
+                            Write-Host "  Size: $(Get-HumanReadableSize -Size $file.Length)"
+                            
+                            if ($videoStream) {
+                                $videoCodec = $videoStream.codec_name
+                                $resolution = "$($videoStream.width)x$($videoStream.height)"
+                                Write-Host "  Video: $videoCodec ($resolution)"
+                            }
+                            
+                            if ($audioStreams.Count -gt 0) {
+                                Write-Host "  Audio Tracks: $($audioStreams.Count)"
+                                foreach ($audio in $audioStreams) {
+                                    $index = $audio.index
+                                    $codec = $audio.codec_name
+                                    $channels = $audio.channels
+                                    Write-Host "    [$index] $codec ($channels channels)"
+                                }
+                            }
+                            
+                            if ($subtitleStreams.Count -gt 0) {
+                                Write-Host "  Subtitle Tracks: $($subtitleStreams.Count)"
+                                foreach ($sub in $subtitleStreams) {
+                                    $index = $sub.index
+                                    $codec = $sub.codec_name
+                                    Write-Host "    [$index] $codec"
+                                }
+                            }
+                            
+                            Write-Host ""
+                        }
+                        
+                        Write-Host ""
+                        Write-ColoredHost "Press any key to return..." -ForegroundColor Yellow
+                        [System.Console]::ReadKey() | Out-Null
+                    }
+                    '2' {
+                        # Subtitle management submenu
+                        Clear-Host
+                        Show-Header
+                        
+                        Write-ColoredHost "Subtitle Management:" -ForegroundColor Yellow
+                        Write-ColoredHost "-------------------" -ForegroundColor Yellow
+                        Write-ColoredHost "1. Fix subtitle flags in all files" -ForegroundColor White
+                        Write-ColoredHost "2. Return to Advanced Menu" -ForegroundColor Red
+                        
+                        $subChoice = Read-Host "Enter your choice"
+                        
+                        if ($subChoice -eq "1") {
+                            $files = Get-InputFiles -scriptDir $scriptDir
+                            foreach ($file in $files) {
+                                if ($file.Extension -eq ".mkv") {
+                                    Write-ColoredHost "Processing subtitle flags in $($file.Name)..." -ForegroundColor Cyan
+                                    Update-SubtitleFlags -filePath $file.FullName
+                                } else {
+                                    Write-ColoredHost "Skipping $($file.Name) - not an MKV file" -ForegroundColor Yellow
+                                }
+                            }
+                            
+                            Write-Host ""
+                            Write-ColoredHost "Subtitle processing completed" -ForegroundColor Green
+                            Write-ColoredHost "Press any key to continue..." -ForegroundColor Yellow
+                            [System.Console]::ReadKey() | Out-Null
+                        }
+                    }
+                    '3' {
+                        # Cleanup temp files
+                        Clear-Host
+                        Show-Header
+                        
+                        $tempDir = Join-Path $env:TEMP "EncoderDownloads"
+                        if (Test-Path $tempDir) {
+                            Write-ColoredHost "Removing temporary files from $tempDir..." -ForegroundColor Cyan
+                            Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+                            Write-ColoredHost "Temporary files removed successfully!" -ForegroundColor Green
+                        } else {
+                            Write-ColoredHost "No temporary files found." -ForegroundColor Yellow
+                        }
+                        
+                        Write-Host ""
+                        Write-ColoredHost "Press any key to continue..." -ForegroundColor Yellow
+                        [System.Console]::ReadKey() | Out-Null
+                    }
+                    'q' { break }
+                    default {
+                        Write-ColoredHost "Invalid choice. Please try again." -ForegroundColor Red
+                        Start-Sleep -Seconds 1.5
                     }
                 }
-                
-                if (-not $mkvFilesFound) {
-                    Write-ColoredHost "No MKV files found. Subtitle processing only works with MKV files." -ForegroundColor Yellow
-                }
-            }
-            
-            Write-Host ""
-            Write-ColoredHost "Subtitle processing completed" -ForegroundColor Green
-            Write-ColoredHost "Press any key to continue..." -ForegroundColor Yellow
-            [System.Console]::ReadKey() | Out-Null
+            } while ($advancedChoice.ToLower() -ne 'q')
         }
-        "q" { return }
+        '5' { Invoke-UpdateEncoders -CheckOnly}
+        'q' {
+            Write-ColoredHost "Exiting... Goodbye!" -ForegroundColor Green
+            Start-Sleep 2
+            return
+        }
         default {
             Write-ColoredHost "Invalid choice. Please try again." -ForegroundColor Red
-            Start-Sleep -Seconds 1.5
         }
     }
-}
 
-# Helper function for a moving progress bar
-function Get-ProgressBar {
-    param(
-        [Parameter(Mandatory = $true)]
-        [double]$Percent,
-        [int]$BarLength = 20
-    )
-    $filledLength = [math]::Round($BarLength * $Percent / 100)
-    $emptyLength = $BarLength - $filledLength
-    $filled = '🟩' * $filledLength
-    $empty = '⬜' * $emptyLength
-    return "[$filled$empty]"
-}
-
-function Invoke-CleanupTemp {
-    Clear-Host
-    Show-Header
-    
-    $tempDir = Join-Path $env:TEMP "EncoderDownloads"
-    if (Test-Path $tempDir) {
-        Write-ColoredHost "Removing temporary files from $tempDir..." -ForegroundColor Cyan
-        Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
-        Write-ColoredHost "Temporary files removed successfully!" -ForegroundColor Green
-    } else {
-        Write-ColoredHost "No temporary files found." -ForegroundColor Yellow
-    }
-    
-    Write-Host ""
-    Write-ColoredHost "Press any key to continue..." -ForegroundColor Yellow
-    [System.Console]::ReadKey() | Out-Null
-}
-
-# Add at the top of the script, after variable declarations
-$global:CurrentEncodingProcess = $null
-
-# Register Ctrl+C handler
-if ($PSVersionTable.PSVersion.Major -ge 5) {
-    Register-EngineEvent PowerShell.Exiting -Action {
-        if ($global:CurrentEncodingProcess -and !$global:CurrentEncodingProcess.HasExited) {
-            $global:CurrentEncodingProcess.Kill()
-        }
-    } | Out-Null
-}
-trap {
-    if ($global:CurrentEncodingProcess -and !$global:CurrentEncodingProcess.HasExited) {
-        $global:CurrentEncodingProcess.Kill()
-    }
-    break
-}
-
-# Menu Loop Intialization
-do {
-    Show-Header
-    Write-Log "JEncoder v$ScriptVersion started" -Level "INFO" -NoConsole
-    Get-Encoders 
-    Show-FilesToProcess -scriptDir $scriptDir -outputDir $outputDir
-    
-    $continueRunning = Invoke-MainMenu
-    
-    if (-not $continueRunning) {
-        break
-    }
-    
     Write-Host ""
     Write-ColoredHost "Press any key to return to the menu..." -ForegroundColor Yellow
     Write-Host ""
     [System.Console]::ReadKey() | Out-Null
 } while ($true)
+
+# Add error handling and logging functions
+function Write-Log {
+    param (
+        [string]$Message,
+        [string]$Level = "INFO",
+        [switch]$NoConsole
+    )
+    
+    if (-not $globalConfig -or $globalConfig.enableLogging) {
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $logEntry = "[$timestamp] [$Level] $Message"
+        
+        # Log to file
+        Add-Content -Path $logFile -Value $logEntry
+        
+        # Output to console if not suppressed
+        if (-not $NoConsole) {
+            $foregroundColor = switch ($Level) {
+                "ERROR"   { "Red" }
+                "WARNING" { "Yellow" }
+                "SUCCESS" { "Green" }
+                default   { "White" }
+            }
+            
+            Write-ColoredHost $Message -ForegroundColor $foregroundColor
+        }
+    } elseif (-not $NoConsole) {
+        # Still output to console if logging is disabled
+        $foregroundColor = switch ($Level) {
+            "ERROR"   { "Red" }
+            "WARNING" { "Yellow" }
+            "SUCCESS" { "Green" }
+            default   { "White" }
+        }
+        
+        Write-ColoredHost $Message -ForegroundColor $foregroundColor
+    }
+}
+
+function Handle-Error {
+    param (
+        [string]$ErrorMessage,
+        [string]$Operation,
+        [System.Management.Automation.ErrorRecord]$ErrorRecord = $null,
+        [switch]$Fatal
+    )
+    
+    $detailedMessage = "Error during $Operation`: $ErrorMessage"
+    
+    # Add error record details if available
+    if ($ErrorRecord) {
+        $detailedMessage += "`nException Type: $($ErrorRecord.Exception.GetType().Name)"
+        $detailedMessage += "`nException Message: $($ErrorRecord.Exception.Message)"
+        $detailedMessage += "`nCategory: $($ErrorRecord.CategoryInfo.Category)"
+        $detailedMessage += "`nActivity: $($ErrorRecord.CategoryInfo.Activity)"
+        
+        if ($globalConfig.verboseLogging) {
+            $detailedMessage += "`nStack Trace:`n$($ErrorRecord.ScriptStackTrace)"
+        }
+    }
+    
+    # Log the error
+    Write-Log -Message $detailedMessage -Level "ERROR" -NoConsole
+    
+    # User-friendly message to console
+    Write-ColoredHost "Error during $Operation: $ErrorMessage" -ForegroundColor Red
+    
+    # Exit script if it's a fatal error
+    if ($Fatal) {
+        Write-ColoredHost "Fatal error occurred. Check the log file for details: $logFile" -ForegroundColor Red
+        exit 1
+    }
+}
+
