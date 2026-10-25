@@ -1,0 +1,6 @@
+# Local settings and run output (created next to the script at runtime)
+config.ini
+encoding_log.txt
+encoders/
+output/
+to_be_deleted/
